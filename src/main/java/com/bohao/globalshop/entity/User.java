@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 @Data
@@ -14,6 +15,7 @@ public class User {
     private Long id;
     private String username;
     private String password;
+    private BigDecimal balance;
     private String nickname;
     private LocalDateTime createTime;
     private LocalDateTime updateTime;

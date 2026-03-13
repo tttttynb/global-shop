@@ -9,14 +9,17 @@ import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 @Data
-@TableName("trade_order")
-public class TradeOrder {
+@TableName("trade_order_item")
+public class TradeOrderItem {
     @TableId(type = IdType.AUTO)
     private Long id;
-    private Long userId;
-    // 移除 productId 和 quantity，由 TradeOrderItem 承担
-    private BigDecimal totalAmount;
-    private Integer status;
+    private Long orderId; // 关联的主订单 ID
+    private Long productId;
+    private String productName;
+    private String coverImage;
+    private BigDecimal price; // 购买时的单价（快照）
+    private Integer quantity;
+    private BigDecimal totalAmount; // 小计金额
     private LocalDateTime createTime;
     private LocalDateTime updateTime;
 }

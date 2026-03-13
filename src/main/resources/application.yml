@@ -13,3 +13,9 @@ mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true
     log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+
+    spring:
+      data:
+        redis:
+          host: localhost
+          port: 6379
