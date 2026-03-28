@@ -5,19 +5,18 @@ import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
 
-import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 @Data
-@TableName("trade_order")
-public class TradeOrder {
+@TableName("product_review")
+public class ProductReview {
     @TableId(type = IdType.AUTO)
     private Long id;
     private Long userId;
-    private Long shopId;
-    // 移除 productId 和 quantity，由 TradeOrderItem 承担
-    private BigDecimal totalAmount;
-    private Integer status;
+    private Long productId;
+    private Long orderItemId;
+    private Integer rating;
+    private String content;
+    private String images;
     private LocalDateTime createTime;
-    private LocalDateTime updateTime;
 }

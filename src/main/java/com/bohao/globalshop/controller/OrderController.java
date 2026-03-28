@@ -42,4 +42,17 @@ public class OrderController {
         Long userId = (Long) request.getAttribute("currentUserId");
         return orderService.payOrder(userId, orderId);
     }
+
+    @PostMapping("/confirm-receipt/{id}")
+    public Result<String> confirmReceipt(HttpServletRequest request, @PathVariable("id") Long orderId) {
+        Long userId = (Long) request.getAttribute("currentUserId");
+        return orderService.confirmReceipt(userId, orderId);
+    }
+
+    // 提交商品评价接口
+    @PostMapping("/review")
+    public Result<String> submitReview(HttpServletRequest request, @RequestBody com.bohao.globalshop.dto.ReviewSubmitDto dto) {
+        Long userId = (Long) request.getAttribute("currentUserId");
+        return orderService.submitReview(userId, dto);
+    }
 }

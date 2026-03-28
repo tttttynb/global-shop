@@ -4,17 +4,20 @@ import com.bohao.globalshop.common.Result;
 import com.bohao.globalshop.dto.CartAddDto;
 import com.bohao.globalshop.service.CartService;
 import com.bohao.globalshop.vo.CartItemVo;
+import com.bohao.globalshop.vo.CartShopVo;
 import jakarta.servlet.http.HttpServletRequest;
+import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 
+@RequiredArgsConstructor
 @RestController
 @RequestMapping("/api/cart")
 public class CartController {
-    @Autowired
-    private CartService cartService;
+
+    private final CartService cartService;
 
     @PostMapping("/add")
     public Result<String> addToCart(HttpServletRequest request, @RequestBody CartAddDto dto) {
@@ -24,9 +27,9 @@ public class CartController {
     }
 
     @GetMapping("/list")
-    public Result<List<CartItemVo>> getMyCart(HttpServletRequest request) {
+    public Result<List<CartShopVo>> getCartList(HttpServletRequest request) {
         Long userId = (Long) request.getAttribute("currentUserId");
-        return cartService.getMyCart(userId);
+        return cartService.getCartList(userId);
     }
 
     @DeleteMapping("/remove/{id}")

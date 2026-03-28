@@ -14,7 +14,13 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 public class GlobalExceptionHandler {
     @ExceptionHandler(RuntimeException.class)
     public Result<String> handleRuntimeException(RuntimeException e) {
-        log.error("触发业务异常:{}", e.getMessage());
+        // 核心修复：把 e 作为最后一个参数传进去，Slf4j 就会自动打印完整的红色报错行号！
+        log.error("🚨 触发业务异常: ", e);
+
+        // 如果是空指针，给前端一个友好的提示，而不是返回 null
+        if (e instanceof NullPointerException) {
+            return Result.error(500, "后端代码出现空指针异常，请查看 IDEA 控制台排查！");
+        }
         return Result.error(500, e.getMessage());
     }
 

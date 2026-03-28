@@ -3,22 +3,21 @@ package com.bohao.globalshop.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.bohao.globalshop.common.Result;
 import com.bohao.globalshop.dto.OrderCreateDto;
-import com.bohao.globalshop.entity.CartItem;
-import com.bohao.globalshop.entity.Product;
-import com.bohao.globalshop.entity.TradeOrder;
-import com.bohao.globalshop.entity.TradeOrderItem;
-import com.bohao.globalshop.entity.User;
+import com.bohao.globalshop.dto.ReviewSubmitDto;
+import com.bohao.globalshop.entity.*;
 import com.bohao.globalshop.mapper.*;
 import com.bohao.globalshop.service.OrderService;
 import com.bohao.globalshop.vo.OrderVo;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 
 @Service
 @RequiredArgsConstructor
@@ -29,6 +28,9 @@ public class OrderServiceImpl implements OrderService {
     private final UserMapper userMapper;
     private final CartItemMapper cartItemMapper;
     private final StringRedisTemplate stringRedisTemplate;
+    private final ShopMapper shopMapper;
+    private final ProductReviewMapper productReviewMapper;
+    private final DefaultRedisScript<Long> seckillScript;
 
     @Override
     @Transactional// 开启数据库事务，保证扣库存和下订单同生共死！！！
@@ -142,59 +144,87 @@ public class OrderServiceImpl implements OrderService {
         if (cartItems == null || cartItems.isEmpty()) {
             return Result.error(400, "购物车空空如也，没东西可以结算哦！");
         }
-
-        BigDecimal totalAmount = BigDecimal.ZERO;
-        List<TradeOrderItem> orderItems = new ArrayList<>();
-
-        for (CartItem cartItem : cartItems) {
-            Product product = productMapper.selectById(cartItem.getProductId());
-            // 校验一：商品还在不在？
-            if (product == null || product.getStatus() == 0) {
-                throw new RuntimeException("商品 [" + cartItem.getProductId() + "] 不存在或已下架，结算失败！");
+        // 2. 核心算法：按店铺拆分购物车商品
+        Map<Long, List<CartItem>> shopCartMap = new HashMap<>();
+        for (CartItem item : cartItems) {
+            Product product = productMapper.selectById(item.getProductId());
+            if (product == null || product.getStatus() != 1) {
+                throw new RuntimeException("商品 [" + item.getProductId() + "] 不存在或已下架，结算失败！");
             }
-            // 校验二：库存够不够？
-            if (product.getStock() < cartItem.getQuantity()) {
-                throw new RuntimeException("商品 [" + product.getName() + "] 库存不足，结算失败！");
-            }
-            // 3. 扣减库存 (触发乐观锁机制)
-            product.setStock(product.getStock() - cartItem.getQuantity());
-            int updateResult = productMapper.updateById(product);
-            if (updateResult == 0) {
-                // 如果返回 0，说明发生高并发冲突，直接抛出异常，让整个结算大回滚！
-                throw new RuntimeException("哎呀，商品 [" + product.getName() + "] 被别人抢先一步啦，请重新结算！");
-            }
-            // 计算该项小计
-            BigDecimal itemAmount = product.getPrice().multiply(new BigDecimal(cartItem.getQuantity()));
-            totalAmount = totalAmount.add(itemAmount);
-            // 准备订单项
-            TradeOrderItem item = new TradeOrderItem();
-            item.setProductId(product.getId());
-            item.setProductName(product.getName());
-            item.setCoverImage(product.getCoverImage());
-            item.setPrice(product.getPrice());
-            item.setQuantity(cartItem.getQuantity());
-            item.setTotalAmount(itemAmount);
-            orderItems.add(item);
+            // 塞进对应店铺的 List 里
+            shopCartMap.computeIfAbsent(product.getShopId(), k -> new ArrayList<>()).add(item);
         }
-        // 4. 创建主订单
-        TradeOrder order = new TradeOrder();
-        order.setUserId(userId);
-        order.setTotalAmount(totalAmount);
-        order.setStatus(0); // 状态：0-待支付
-        traderOrderMapper.insert(order);
+        // 3.开始“拆单”流程！遍历每一个店铺
+        for (Map.Entry<Long, List<CartItem>> entry : shopCartMap.entrySet()) {
+            Long shopId = entry.getKey();
+            List<CartItem> shopItems = entry.getValue();
+            BigDecimal shopTotalAmount = BigDecimal.ZERO;
+            List<TradeOrderItem> orderItems = new ArrayList<>();
+            // 3.1 遍历这个店铺下的商品：算钱 + 扣库存
+            for (CartItem item : shopItems) {
+                Product product = productMapper.selectById(item.getProductId());
+                if (product == null || product.getStatus() != 1) {
+                    throw new RuntimeException("商品 [" + item.getProductId() + "] 不存在或已下架！");
+                }
 
-        //新增：把订单号塞进 Redis 延迟队列！
-        Long expireTime = System.currentTimeMillis() + (15 * 60 * 1000);
-        stringRedisTemplate.opsForZSet().add("order:timeout:queue", String.valueOf(order.getId()), expireTime);
+                // ==========================================
+                // 🚀 大厂秒杀核心：Redis + Lua 分布式原子预扣减！
+                // ==========================================
+                // 构造这个商品在 Redis 里的库存 Key (例如: seckill:stock:1)
+                String stockKey = "seckill:stock:" + product.getId();
 
-        // 5. 保存订单项
-        for (TradeOrderItem item : orderItems) {
-            item.setOrderId(order.getId());
-            tradeOrderItemMapper.insert(item);
+                // 向 Redis 发射 Lua 脚本！
+                // 参数1: 脚本本身; 参数2: KEYS数组(只传一个Key); 参数3: ARGV数组(购买数量)
+                Long luaResult = stringRedisTemplate.execute(
+                        seckillScript,
+                        Collections.singletonList(stockKey),
+                        String.valueOf(item.getQuantity())
+                );
+
+                // 🚨 如果 Lua 脚本返回 0，说明 Redis 里的库存已经被抢光了，直接无情拒绝！
+                if (luaResult == null || luaResult == 0L) {
+                    throw new RuntimeException("💥 哎呀手慢了！商品 [" + product.getName() + "] 已被抢空！");
+                }
+
+                // 👇 只有成功通过了 Redis Lua 脚本的“幸运儿”，才有资格继续往下走！
+                // 在真实的秒杀系统里，走到这里通常会把订单丢进 RabbitMQ 异步写库。
+                // 咱们这里为了保持闭环，既然 Redis 已经扣减成功，我们直接把通过了拦截的合法请求同步写进 MySQL：
+                product.setStock(product.getStock() - item.getQuantity());
+                productMapper.updateById(product);
+                //计算这件商品的小计
+                BigDecimal itemAmount = product.getPrice().multiply(new BigDecimal(item.getQuantity()));
+                shopTotalAmount = shopTotalAmount.add(itemAmount);
+                //准备订单项
+                TradeOrderItem orderItem = new TradeOrderItem();
+                orderItem.setProductId(product.getId());
+                orderItem.setProductName(product.getName());
+                orderItem.setCoverImage(product.getCoverImage());
+                orderItem.setPrice(product.getPrice());
+                orderItem.setQuantity(item.getQuantity());
+                orderItem.setTotalAmount(itemAmount);
+                orderItems.add(orderItem);
+                // 3.2 顺手把这件商品从购物车表里物理删除！
+                cartItemMapper.deleteById(item.getId());
+            }
+            //4.为这个店铺生成专属主订单
+            TradeOrder order = new TradeOrder();
+            order.setUserId(userId);
+            order.setShopId(shopId);
+            order.setTotalAmount(shopTotalAmount);
+            order.setStatus(0);
+            traderOrderMapper.insert(order);
+            // 5. 将刚才暂存的【子订单明细】绑上主订单 ID，并存入数据库
+            for (TradeOrderItem orderItem : orderItems) {
+                orderItem.setOrderId(order.getId());
+                tradeOrderItemMapper.insert(orderItem);
+            }
+            // 6. 联动高级架构：把刚生成的这个新订单，推入 Redis 延迟队列！
+            // 假设 15 分钟不付钱就取消（这里用 15 * 60 * 1000 毫秒）
+            long expireTime = System.currentTimeMillis() + 15 * 60 * 1000;
+            stringRedisTemplate.opsForZSet().add("order:timeout:queue", String.valueOf(order.getId()), expireTime);
+            System.out.println("✅ 拆单成功：为店铺 [" + shopId + "] 生成了订单 [" + order.getId() + "]，金额:" + shopTotalAmount);
         }
-        // 6. 清空购物车 (批量删除)
-        cartItemMapper.delete(queryWrapper);
-        return Result.success("购物车结算成功！请前往订单列表支付。");
+        return Result.success("🎉 购物车合并结算成功！系统已自动为您拆分为 " + shopCartMap.size() + " 笔独立订单，请前往支付！");
     }
 
     @Override
@@ -219,5 +249,71 @@ public class OrderServiceImpl implements OrderService {
             }
         }
         return Result.success("订单取消成功！");
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class) // 涉及状态流转，加上事务保护
+    public Result<String> confirmReceipt(Long userId, Long orderId) {
+        //1.查出这笔订单
+        TradeOrder order = traderOrderMapper.selectById(orderId);
+        if (order == null) {
+            return Result.error(404, "哎呀，没找到这笔订单！");
+        }
+        if (!order.getUserId().equals(userId)) {
+            return Result.error(403, "严重警告：非法请求！您无权操作别人的订单！");
+        }
+        if (order.getStatus() != 3) {
+            return Result.error(400, "这笔订单当前还未发货或已完结，无法确认收货哦！");
+        }
+        order.setStatus(4);
+        traderOrderMapper.updateById(order);
+        //2.担保资金给商家
+        //2.1找到卖这个产品的商家
+        Shop shop = shopMapper.selectById(order.getShopId());
+        if (shop != null) {
+            //2.2找到卖这个产品的老板
+            User merchant = userMapper.selectById(userId);
+            if (merchant != null) {
+                //2.3 开始打钱！商家的当前余额 + 这笔订单的总金额
+                merchant.setBalance(merchant.getBalance().add(order.getTotalAmount()));
+                userMapper.updateById(merchant);
+                System.out.println("财务播报：已成功向商家 [" + merchant.getId() + "] 的钱包转入货款：" + order.getTotalAmount() + "元！");
+            }
+        }
+        return Result.success("🎉 确认收货成功！交易完成，快去给商品写个评价吧！");
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Result<String> submitReview(Long userId, ReviewSubmitDto dto) {
+        TradeOrderItem orderItem = tradeOrderItemMapper.selectById(dto.getOrderItemId());
+        if (orderItem == null) {
+            return Result.error(404, "订单不存在！");
+        }
+        TradeOrder mainOrder = traderOrderMapper.selectById(orderItem.getOrderId());
+        if (!mainOrder.getUserId().equals(userId)) {
+            return Result.error(403, "严重警告：你不能评价别人买的商品！");
+        }
+        if (mainOrder.getStatus() != 4) {
+            return Result.error(400, "必须确认收货后才能发表评价哦！");
+        }
+        //防刷单校验（你是不是已经评过一次了？）
+        QueryWrapper<ProductReview> reviewQw = new QueryWrapper<>();
+        reviewQw.eq("order_item_id", dto.getOrderItemId());
+        if (productReviewMapper.selectCount(reviewQw) > 0) {
+            return Result.error(400, "您已经评价过该商品了，不能重复评价！");
+        }
+        //生成评价记录
+        ProductReview review = new ProductReview();
+        review.setUserId(userId);
+        review.setProductId(orderItem.getProductId());
+        review.setOrderItemId(dto.getOrderItemId());
+        review.setRating(dto.getRating());
+        review.setContent(dto.getContent());
+        review.setImages(dto.getImages());
+        productReviewMapper.insert(review);
+        mainOrder.setStatus(5);
+
+        return Result.success("🎉 感谢您的五星好评！评价发布成功！");
     }
 }
