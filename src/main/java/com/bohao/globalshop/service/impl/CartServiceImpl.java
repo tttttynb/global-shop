@@ -93,7 +93,7 @@ public class CartServiceImpl implements CartService {
             itemVo.setProductName(product.getName());
             itemVo.setCoverImage(product.getCoverImage());
             itemVo.setPrice(product.getPrice());
-            itemVo.setQuantity(product.getStock());
+            itemVo.setQuantity(item.getQuantity());
             itemVo.setItemTotalAmount(product.getPrice().multiply(new BigDecimal(item.getQuantity())));
             //6.把商品塞进对应的VO里
             shopVo.getItems().add(itemVo);

@@ -4,7 +4,6 @@ server:
 spring:
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
-
     url: jdbc:mysql://localhost:3306/global_shop?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai
     username: root
     password: 1234
@@ -13,6 +12,42 @@ spring:
       host: localhost
       port: 6379
 
+  elasticsearch:
+    uris: http://localhost:9200
+    username: elastic
+    password: Su1S0*d0-t9FW4AkD+NH
+  ai:
+    openai:
+      # 替换为你申请的 API Key（可以去阿里云百炼控制台免费开通通义千问）
+      api-key: sk-ec2befd2ab0743fcb9f873cae3f6d91c
+      # 通义千问的 OpenAI 兼容模式网关地址
+      base-url: https://dashscope.aliyuncs.com/compatible-mode
+      embedding:
+        options:
+          # 指定向量生成模型
+          model: text-embedding-v3
+    # 🚀 消息队列底层配置
+    rabbitmq:
+      host: localhost
+      port: 5672
+      username: guest
+      password: guest
+      # 开启发送确认机制，保证消息绝对不丢失
+      publisher-confirm-type: correlated
+      publisher-returns: true
+# 🚀 Langchain4j 专属大模型配置
+langchain4j:
+  open-ai:
+    chat-model:
+      # 替换成你之前申请的阿里云 API Key
+      api-key: sk-ec2befd2ab0743fcb9f873cae3f6d91c
+      # 阿里云的 OpenAI 兼容网关地址
+      base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
+      # 指定能聊天的强大模型（qwen-plus 对 Function Calling 的支持极好）
+      model-name: qwen3.5-plus
+      # 开启日志：让你能在 IDEA 控制台偷窥 AI 在底层是怎么思考和调用的！
+      log-requests: true
+      log-responses: true
 mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true

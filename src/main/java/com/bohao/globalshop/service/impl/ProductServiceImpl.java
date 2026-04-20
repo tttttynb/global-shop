@@ -25,8 +25,13 @@ import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Random;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 @RequiredArgsConstructor
 @Slf4j
@@ -49,9 +54,21 @@ public class ProductServiceImpl implements ProductService {
         QueryWrapper<Product> queryWrapper = new QueryWrapper<>();
         queryWrapper.eq("status", 1);
         List<Product> products = productMapper.selectList(queryWrapper);
-        //2.准备一个空的VO集合，封装数据
+
+        // 2. 批量查询优化：收集所有不重复的 shopId，一次性查询所有店铺
+        Set<Long> shopIds = products.stream()
+                .map(Product::getShopId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+
+        // 3. 批量查询店铺，转换为 Map 方便快速查找
+        Map<Long, Shop> shopMap = shopIds.isEmpty()
+                ? Map.of()
+                : shopMapper.selectBatchIds(shopIds).stream()
+                        .collect(Collectors.toMap(Shop::getId, Function.identity()));
+
+        // 4. 组装 VO 列表
         ArrayList<ProductVo> voList = new ArrayList<>();
-        //3.遍历拼接，将店铺表和商品表的数据缝合起来
         for (Product product : products) {
             ProductVo vo = new ProductVo();
             vo.setId(product.getId());
@@ -62,8 +79,8 @@ public class ProductServiceImpl implements ProductService {
             vo.setStock(product.getStock());
             vo.setCoverImage(product.getCoverImage());
 
-            //核心：根据商品的shopId，去店铺表里查名
-            Shop shop = shopMapper.selectById(product.getId());
+            // 从 Map 中获取店铺信息，避免 N+1 查询
+            Shop shop = product.getShopId() != null ? shopMap.get(product.getShopId()) : null;
             if (shop != null) {
                 vo.setShopName(shop.getName());
             } else {

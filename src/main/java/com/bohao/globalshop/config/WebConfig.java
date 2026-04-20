@@ -17,7 +17,7 @@ public class WebConfig implements WebMvcConfigurer {
     public void addInterceptors(InterceptorRegistry registry) {
         registry.addInterceptor(jwtInterceptor)
                 // 安排保安守住所有以 /api/order/ 开头的接口（比如未来的下单接口）
-                .addPathPatterns("/api/order/**", "/api/cart/**","/api/merchant/**")
+                .addPathPatterns("/api/order/**", "/api/cart/**", "/api/merchant/**", "/api/chat/**")
                 // 同时，告诉保安不要去管登录、注册和查看商品列表的接口
                 .excludePathPatterns("/api/user/login", "/api/user/register", "/api/product/**");
     }
@@ -25,10 +25,11 @@ public class WebConfig implements WebMvcConfigurer {
     @Override
     public void addCorsMappings(CorsRegistry registry) {
         registry.addMapping("/**") // 允许所有接口
-                .allowedOriginPatterns("*") // 允许所有前端地址
-                .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS") // 允许所有请求方式
-                .allowedHeaders("*") // 允许所有请求头
-                .allowCredentials(true); // 允许携带凭证（如 Cookie/Token
+                // TODO: 生产环境需要限制为具体的前端域名，如 "https://www.example.com"
+                .allowedOriginPatterns("*") // 开发阶段允许所有前端地址
+                .allowedMethods("GET", "POST", "PUT", "DELETE") // 限制允许的请求方式
+                .allowedHeaders("Authorization", "Content-Type", "X-Requested-With") // 限制允许的请求头
+                .allowCredentials(true); // 允许携带凭证（如 Cookie/Token）
     }
 
 }

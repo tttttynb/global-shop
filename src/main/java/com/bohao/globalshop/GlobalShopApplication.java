@@ -7,6 +7,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 
 @SpringBootApplication
 @EnableScheduling
+@MapperScan("com.bohao.globalshop.mapper")
 public class GlobalShopApplication {
 
     public static void main(String[] args) {

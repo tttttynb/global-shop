@@ -2,6 +2,7 @@ package com.bohao.globalshop.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.bohao.globalshop.common.Result;
+import com.bohao.globalshop.config.RabbitMqConfig;
 import com.bohao.globalshop.dto.OrderCreateDto;
 import com.bohao.globalshop.dto.ReviewSubmitDto;
 import com.bohao.globalshop.entity.*;
@@ -10,6 +11,7 @@ import com.bohao.globalshop.service.OrderService;
 import com.bohao.globalshop.vo.OrderVo;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
@@ -31,6 +33,7 @@ public class OrderServiceImpl implements OrderService {
     private final ShopMapper shopMapper;
     private final ProductReviewMapper productReviewMapper;
     private final DefaultRedisScript<Long> seckillScript;
+    private final RabbitTemplate rabbitTemplate;
 
     @Override
     @Transactional// 开启数据库事务，保证扣库存和下订单同生共死！！！
@@ -59,9 +62,9 @@ public class OrderServiceImpl implements OrderService {
         order.setStatus(0);
         traderOrderMapper.insert(order);
 
-        //新增：把订单号塞进 Redis 延迟队列！
-        Long expireTime = System.currentTimeMillis() + (15 * 60 * 1000);
-        stringRedisTemplate.opsForZSet().add("order:timeout:queue", String.valueOf(order.getId()), expireTime);
+        // 🚀 架构升级：把订单号作为消息，直接扔进 RabbitMQ 的延迟队列（等待区）！
+        // 消息一发出去，当前线程立刻返回给前端“下单成功”，绝不阻塞！
+        rabbitTemplate.convertAndSend(RabbitMqConfig.ORDER_DELAY_EXCHANGE, RabbitMqConfig.ORDER_DELAY_ROUTING_KEY, order.getId());
 
         // 2. 创建订单详情
         TradeOrderItem orderItem = new TradeOrderItem();
@@ -74,7 +77,7 @@ public class OrderServiceImpl implements OrderService {
         orderItem.setTotalAmount(totalAmount);
         tradeOrderItemMapper.insert(orderItem);
 
-        return Result.success("太棒了！订单创建成功，总共消费：" + totalAmount + " 元！");
+        return Result.success(String.valueOf(order.getId()));
     }
 
     @Override
@@ -154,6 +157,7 @@ public class OrderServiceImpl implements OrderService {
             // 塞进对应店铺的 List 里
             shopCartMap.computeIfAbsent(product.getShopId(), k -> new ArrayList<>()).add(item);
         }
+        List<String> createdOrderIds = new ArrayList<>();
         // 3.开始“拆单”流程！遍历每一个店铺
         for (Map.Entry<Long, List<CartItem>> entry : shopCartMap.entrySet()) {
             Long shopId = entry.getKey();
@@ -213,18 +217,22 @@ public class OrderServiceImpl implements OrderService {
             order.setTotalAmount(shopTotalAmount);
             order.setStatus(0);
             traderOrderMapper.insert(order);
+            createdOrderIds.add(String.valueOf(order.getId()));
             // 5. 将刚才暂存的【子订单明细】绑上主订单 ID，并存入数据库
             for (TradeOrderItem orderItem : orderItems) {
                 orderItem.setOrderId(order.getId());
                 tradeOrderItemMapper.insert(orderItem);
             }
-            // 6. 联动高级架构：把刚生成的这个新订单，推入 Redis 延迟队列！
-            // 假设 15 分钟不付钱就取消（这里用 15 * 60 * 1000 毫秒）
-            long expireTime = System.currentTimeMillis() + 15 * 60 * 1000;
-            stringRedisTemplate.opsForZSet().add("order:timeout:queue", String.valueOf(order.getId()), expireTime);
+//            // 6. 联动高级架构：把刚生成的这个新订单，推入 Redis 延迟队列！
+//            // 假设 15 分钟不付钱就取消（这里用 15 * 60 * 1000 毫秒）
+//            long expireTime = System.currentTimeMillis() + 15 * 60 * 1000;
+//            stringRedisTemplate.opsForZSet().add("order:timeout:queue", String.valueOf(order.getId()), expireTime);
+            // 6. 🚀 大厂架构：把刚生成的拆单主订单号，推入 RabbitMQ 延迟轨道！
+            rabbitTemplate.convertAndSend(RabbitMqConfig.ORDER_DELAY_EXCHANGE, RabbitMqConfig.ORDER_DELAY_ROUTING_KEY, order.getId());
             System.out.println("✅ 拆单成功：为店铺 [" + shopId + "] 生成了订单 [" + order.getId() + "]，金额:" + shopTotalAmount);
         }
-        return Result.success("🎉 购物车合并结算成功！系统已自动为您拆分为 " + shopCartMap.size() + " 笔独立订单，请前往支付！");
+//        return Result.success("🎉 购物车合并结算成功！系统已自动为您拆分为 " + shopCartMap.size() + " 笔独立订单，请前往支付！");
+        return Result.success(String.join(",", createdOrderIds));
     }
 
     @Override
@@ -232,7 +240,7 @@ public class OrderServiceImpl implements OrderService {
     public Result<String> cancelSingleOrder(Long orderId) {
         TradeOrder order = traderOrderMapper.selectById(orderId);
         // 如果订单存在，并且依然是 0 (待支付) 状态
-        if (order.getStatus() == 0 || order != null) {
+        if (order != null && order.getStatus() == 0) {
             // 1. 改为已取消
             order.setStatus(2);
             traderOrderMapper.updateById(order);
@@ -243,13 +251,14 @@ public class OrderServiceImpl implements OrderService {
         List<TradeOrderItem> items = tradeOrderItemMapper.selectList(wrapper);
         for (TradeOrderItem item : items) {
             Product product = productMapper.selectById(item.getProductId());
-            if (item != null) {
+            if (product != null) {
                 product.setStock(product.getStock() + item.getQuantity());
                 productMapper.updateById(product);
             }
         }
-        return Result.success("订单取消成功！");
+        return Result.success("订单取消成功！库存已回退！");
     }
+
 
     @Override
     @Transactional(rollbackFor = Exception.class) // 涉及状态流转，加上事务保护
@@ -272,7 +281,7 @@ public class OrderServiceImpl implements OrderService {
         Shop shop = shopMapper.selectById(order.getShopId());
         if (shop != null) {
             //2.2找到卖这个产品的老板
-            User merchant = userMapper.selectById(userId);
+            User merchant = userMapper.selectById(shop.getUserId());
             if (merchant != null) {
                 //2.3 开始打钱！商家的当前余额 + 这笔订单的总金额
                 merchant.setBalance(merchant.getBalance().add(order.getTotalAmount()));
@@ -313,6 +322,7 @@ public class OrderServiceImpl implements OrderService {
         review.setImages(dto.getImages());
         productReviewMapper.insert(review);
         mainOrder.setStatus(5);
+        traderOrderMapper.updateById(mainOrder);
 
         return Result.success("🎉 感谢您的五星好评！评价发布成功！");
     }

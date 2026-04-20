@@ -12,18 +12,28 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 @Slf4j
 @RestControllerAdvice//自动监听所有 Controller 的动静
 public class GlobalExceptionHandler {
+
+    /**
+     * 处理空指针异常（最具体的异常类型，优先级最高）
+     */
+    @ExceptionHandler(NullPointerException.class)
+    public Result<String> handleNullPointerException(NullPointerException e) {
+        log.error("触发空指针异常: ", e);
+        return Result.error(500, "后端代码出现空指针异常，请查看 IDEA 控制台排查！");
+    }
+
+    /**
+     * 处理运行时异常（业务异常）
+     */
     @ExceptionHandler(RuntimeException.class)
     public Result<String> handleRuntimeException(RuntimeException e) {
-        // 核心修复：把 e 作为最后一个参数传进去，Slf4j 就会自动打印完整的红色报错行号！
-        log.error("🚨 触发业务异常: ", e);
-
-        // 如果是空指针，给前端一个友好的提示，而不是返回 null
-        if (e instanceof NullPointerException) {
-            return Result.error(500, "后端代码出现空指针异常，请查看 IDEA 控制台排查！");
-        }
+        log.error("触发业务异常: ", e);
         return Result.error(500, e.getMessage());
     }
 
+    /**
+     * 处理其他未知异常（最宽泛的异常类型，优先级最低）
+     */
     @ExceptionHandler(Exception.class)
     public Result<String> handleException(Exception e) {
         log.error("触发未知系统异常:", e);

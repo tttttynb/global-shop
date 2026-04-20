@@ -66,8 +66,8 @@ public class MerchantServiceImpl implements MerchantService {
         //2. 上架商品：把生成的商品和当前用户的 shopId 死死绑定！
         Product product = new Product();
         product.setShopId(myShop.getId());
-        product.setName(myShop.getName());
-        product.setDescription(myShop.getDescription());
+        product.setName(dto.getName());
+        product.setDescription(dto.getDescription());
         product.setPrice(dto.getPrice());
         product.setStock(dto.getStock());
         product.setCoverImage(dto.getCoverImage());
