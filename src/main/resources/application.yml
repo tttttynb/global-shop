@@ -52,3 +52,19 @@ mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true
     log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+
+app:
+  live:
+    aliyun:
+      access-key-id: ${LIVE_ACCESS_KEY_ID:your-access-key-id}
+      access-key-secret: ${LIVE_ACCESS_KEY_SECRET:your-access-key-secret}
+      push-domain: ${LIVE_PUSH_DOMAIN:push.example.com}
+      pull-domain: ${LIVE_PULL_DOMAIN:pull.example.com}
+      app-name: ${LIVE_APP_NAME:globalshop}
+      auth-key: ${LIVE_AUTH_KEY:your-auth-key}
+    translation:
+      nls-app-key: ${NLS_APP_KEY:your-nls-app-key}
+      nls-access-key: ${NLS_ACCESS_KEY:your-nls-access-key}
+      nls-access-secret: ${NLS_ACCESS_SECRET:your-nls-access-secret}
+      supported-languages: en,ja,ko,th
+      max-concurrent-sessions: 100

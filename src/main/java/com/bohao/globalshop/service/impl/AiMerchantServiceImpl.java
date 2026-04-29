@@ -32,11 +32,23 @@ public class AiMerchantServiceImpl {
                     "{\"name\": \"标题\", \"description\": \"描述\", \"tags\": [\"标签1\", \"标签2\"]}";
             
             // 2. ⚡ 下载图片并转换为 Base64（设置超时时间）
-            log.info("正在下载图片: {}", imageUrl);
-            HttpUtil.createGet(imageUrl).timeout(30000);
-            byte[] imageBytes = HttpUtil.downloadBytes(imageUrl);
-            String base64Image = Base64.encode(imageBytes);
-            log.info("图片下载成功，Base64长度: {}", base64Image.length());
+            String base64Image;
+            if (imageUrl != null && imageUrl.startsWith("data:image")) {
+                // 处理 data URI 格式：data:image/xxx;base64,xxxxx
+                int base64Index = imageUrl.indexOf("base64,");
+                if (base64Index != -1) {
+                    base64Image = imageUrl.substring(base64Index + 7);
+                } else {
+                    throw new IllegalArgumentException("无效的 data URI 格式");
+                }
+                log.info("使用前端提供的 base64 图片数据，长度: {}", base64Image.length());
+            } else {
+                // 处理普通 HTTP/HTTPS URL
+                log.info("正在下载图片: {}", imageUrl);
+                byte[] imageBytes = HttpUtil.downloadBytes(imageUrl);
+                base64Image = Base64.encode(imageBytes);
+                log.info("图片下载成功，Base64长度: {}", base64Image.length());
+            }
             
             // 3. 组装多模态消息（文字 + Base64图像）
             UserMessage userMessage = UserMessage.from(

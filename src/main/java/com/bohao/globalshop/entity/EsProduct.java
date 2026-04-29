@@ -8,6 +8,7 @@ import org.springframework.data.elasticsearch.annotations.Field;
 import org.springframework.data.elasticsearch.annotations.FieldType;
 
 import java.math.BigDecimal;
+import java.util.List;
 
 // 1. 指定 ES 中的索引名称（相当于 MySQL 的表名）
 @Data
@@ -37,5 +38,5 @@ public class EsProduct {
     // 极其关键：加上 @JsonIgnore，禁止把这 1024 个数字传给前端！
     @JsonIgnore
     @Field(type = FieldType.Dense_Vector, dims = 1024, index = true)
-    private float[] vector;
+    private List<Float> vector;
 }

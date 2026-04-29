@@ -18,7 +18,7 @@ public class JwtInterceptor implements HandlerInterceptor {
         //2.如果没带通行证
         if (token == null || token.isEmpty()) {
             response.setContentType("application/json;charset=utf-8");
-            response.getWriter().write("{\"code\":401,\"message\":\\\"不好意思，请先登录！\"}");
+            response.getWriter().write("{\"code\":401,\"message\":\"不好意思，请先登录！\"}");
             return false;
         }
         //3.验证通行证的真伪

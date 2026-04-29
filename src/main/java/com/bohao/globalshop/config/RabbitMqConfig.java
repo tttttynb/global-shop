@@ -18,6 +18,11 @@ public class RabbitMqConfig {
     public static final String ORDER_DEAD_QUEUE = "order.dead.queue";
     public static final String ORDER_DEAD_ROUTING_KEY = "order.dead.routing.key";
 
+    // ================== 弹幕消息队列（用于削峰和异步持久化） ==================
+    public static final String LIVE_MESSAGE_EXCHANGE = "live.message.exchange";
+    public static final String LIVE_MESSAGE_QUEUE = "live.message.queue";
+    public static final String LIVE_MESSAGE_ROUTING_KEY = "live.message.routing.key";
+
     // ================== 2. 创建 💀 死信组件 (坟墓) ==================
     @Bean
     public DirectExchange orderDeadExchange() {
@@ -55,6 +60,22 @@ public class RabbitMqConfig {
 
     @Bean
     public Binding orderDelayBinding() {
-        return BindingBuilder.bind(orderDeadQueue()).to(orderDelayExchange()).with(ORDER_DELAY_ROUTING_KEY);
+        return BindingBuilder.bind(orderDelayQueue()).to(orderDelayExchange()).with(ORDER_DELAY_ROUTING_KEY);
+    }
+
+    // ================== 4. 创建 💬 弹幕消息组件 (削峰队列) ==================
+    @Bean
+    public DirectExchange liveMessageExchange() {
+        return new DirectExchange(LIVE_MESSAGE_EXCHANGE);
+    }
+
+    @Bean
+    public Queue liveMessageQueue() {
+        return new Queue(LIVE_MESSAGE_QUEUE);
+    }
+
+    @Bean
+    public Binding liveMessageBinding() {
+        return BindingBuilder.bind(liveMessageQueue()).to(liveMessageExchange()).with(LIVE_MESSAGE_ROUTING_KEY);
     }
 }

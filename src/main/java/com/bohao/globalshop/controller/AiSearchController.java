@@ -37,12 +37,13 @@ public class AiSearchController {
         Iterable<EsProduct> products = esProductRepository.findAll();
         int count = 0;
         for (EsProduct product : products) {
-            // 将商品的核心信息，拼接成一段连贯的“自然语言”
             String textToEmbed = "商品名称：" + product.getName() + "。商品描述：" + product.getDescription();
-            //呼叫大模型，瞬间降维成 1024 维的浮点数组！
             float[] vectors = embeddingModel.embed(textToEmbed);
-            // 将“灵魂向量”塞回商品，并重新存入 ES
-            product.setVector(vectors);
+            List<Float> vectorList = new ArrayList<>();
+            for (float v : vectors) {
+                vectorList.add(v);
+            }
+            product.setVector(vectorList);
             esProductRepository.save(product);
 
             count++;
@@ -51,37 +52,34 @@ public class AiSearchController {
         return "太强了！成功为 " + count + " 个商品注入了 AI 语义向量！";
     }
 
-    /**
-     * 接口二：【大模型语义导购】
-     * 作用：不用精准匹配关键字，直接根据买家的“大白话”去猜测意图并推荐商品！
-     */
     @GetMapping("/semantic")
     public List<EsProduct> semanticSearch(@RequestParam String keyWord) {
         System.out.println("买家搜索原话：" + keyWord);
-        // 1. 🧠 意图识别：将买家的大白话，也转为 1024 维度的意图向量
         float[] userVector = embeddingModel.embed(keyWord);
-        // （类型转换：ES 8.x 底层 API 需要 List<Float> 格式）
         List<Float> vectorList = new ArrayList<>();
         for (float v : userVector) {
             vectorList.add(v);
         }
         // 2.空间跃迁：构建 KNN (K近邻) 向量查询
         KnnQuery knnQuery = KnnQuery.of(k -> k
-                .field("vector")    // 在哪个字段里找？
-                .queryVector(vectorList)  // 传入买家的意图向量
-                .k(5)               // 返回最相似的 5 件商品
-                .numCandidates(50)  // 底层算法先在 50 个候选人里粗筛，保证极速
+                .field("vector")
+                .queryVector(vectorList)
+                .k(10)
+                .numCandidates(50)
         );
+
         NativeQuery query = NativeQuery.builder()
-                .withKnnQuery(knnQuery)
+                .withQuery(q -> q.knn(k -> k
+                        .field("vector")
+                        .queryVector(vectorList)
+                        .numCandidates(10)
+                ))
                 .build();
-        // 3.降维打击：执行毫秒级多维空间检索！
+
         SearchHits<EsProduct> hits = elasticsearchOperations.search(query, EsProduct.class);
-        // 4. 解析战果并返回
         List<EsProduct> result = new ArrayList<>();
         for (SearchHit<EsProduct> hit : hits) {
             EsProduct product = hit.getContent();
-            // 极其硬核：在控制台打印出 AI 算出来的“语义相似度分数”！
             System.out.println("🎯 命中商品: [" + product.getName() + "]，AI 相似度得分: " + hit.getScore());
             result.add(product);
         }

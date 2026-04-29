@@ -75,17 +75,19 @@ public class CartServiceImpl implements CartService {
             if (product == null)
                 continue;
             Long shopId = product.getShopId();
+            if (shopId == null) {
+                continue;
+            }
             //4.看看这个店铺的VO是不是已经在Map里的？如果没有，新建一个
-            CartShopVo shopVo = shopMap.get(shopId);
-            if (shopVo == null) {
+            CartShopVo shopVo = shopMap.computeIfAbsent(shopId, key -> {
                 CartShopVo cartShopVo = new CartShopVo();
                 cartShopVo.setShopId(shopId);
                 //查出真实店铺名
                 Shop shop = shopMapper.selectById(shopId);
                 cartShopVo.setShopName(shop != null ? shop.getName() : "已注销店铺");
                 cartShopVo.setItems(new ArrayList<>());
-                shopMap.put(shopId, cartShopVo);
-            }
+                return cartShopVo;
+            });
             //5.组装底层的商品明细
             CartItemVo itemVo = new CartItemVo();
             itemVo.setCartItemId(item.getId());
