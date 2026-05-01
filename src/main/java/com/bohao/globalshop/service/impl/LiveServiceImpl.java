@@ -7,8 +7,10 @@ import com.bohao.globalshop.dto.LiveCreateDto;
 import com.bohao.globalshop.dto.LiveProductDto;
 import com.bohao.globalshop.entity.LiveProduct;
 import com.bohao.globalshop.entity.LiveRoom;
+import com.bohao.globalshop.entity.LiveMessage;
 import com.bohao.globalshop.entity.Product;
 import com.bohao.globalshop.entity.Shop;
+import com.bohao.globalshop.mapper.LiveMessageMapper;
 import com.bohao.globalshop.mapper.LiveProductMapper;
 import com.bohao.globalshop.mapper.LiveRoomMapper;
 import com.bohao.globalshop.mapper.ProductMapper;
@@ -22,13 +24,16 @@ import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 @RequiredArgsConstructor
 @Service
 public class LiveServiceImpl implements LiveService {
     private final LiveRoomMapper liveRoomMapper;
     private final LiveProductMapper liveProductMapper;
+    private final LiveMessageMapper liveMessageMapper;
     private final ShopMapper shopMapper;
     private final ProductMapper productMapper;
     private final AliyunLiveService aliyunLiveService;
@@ -255,6 +260,48 @@ public class LiveServiceImpl implements LiveService {
         room.setAiAssistantEnabled(enabled);
         liveRoomMapper.updateById(room);
         return Result.success(enabled ? "AI助理已开启！" : "AI助理已关闭！");
+    }
+
+    @Override
+    public Result<Map<String, Object>> getHistoryMessages(Long roomId, Integer page, Integer size) {
+        QueryWrapper<LiveMessage> qw = new QueryWrapper<>();
+        qw.eq("live_room_id", roomId).orderByDesc("create_time");
+        long total = liveMessageMapper.selectCount(qw);
+        int offset = (page - 1) * size;
+        qw.last("LIMIT " + offset + "," + size);
+        List<LiveMessage> messages = liveMessageMapper.selectList(qw);
+
+        Map<String, Object> result = new HashMap<>();
+        result.put("list", messages);
+        result.put("total", total);
+        result.put("page", page);
+        result.put("size", size);
+        return Result.success(result);
+    }
+
+    @Override
+    public Result<List<Map<String, Object>>> getLiveProducts(Long roomId) {
+        QueryWrapper<LiveProduct> lpQw = new QueryWrapper<>();
+        lpQw.eq("live_room_id", roomId).orderByAsc("sort_order");
+        List<LiveProduct> liveProducts = liveProductMapper.selectList(lpQw);
+
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (LiveProduct lp : liveProducts) {
+            Product product = productMapper.selectById(lp.getProductId());
+            if (product != null) {
+                Map<String, Object> item = new HashMap<>();
+                item.put("id", lp.getId());
+                item.put("productId", product.getId());
+                item.put("productName", product.getName());
+                item.put("productImage", product.getCoverImage());
+                item.put("price", product.getPrice());
+                item.put("stock", product.getStock());
+                item.put("description", product.getDescription());
+                item.put("isExplaining", lp.getIsExplaining());
+                result.add(item);
+            }
+        }
+        return Result.success(result);
     }
 
     // ========== 私有辅助方法 ==========

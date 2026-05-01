@@ -14,4 +14,7 @@ public interface CartService {
 
     // 将商品移出购物车
     Result<String> removeCartItem(Long userId, Long cartItemId);
+
+    // 修改购物车商品数量
+    Result<String> updateQuantity(Long userId, Long cartItemId, Integer quantity);
 }

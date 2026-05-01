@@ -17,9 +17,10 @@ import com.bohao.globalshop.vo.OrderVo;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
-import java.lang.invoke.VarHandle;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 @Service
 @RequiredArgsConstructor
@@ -138,5 +139,116 @@ public class MerchantServiceImpl implements MerchantService {
         traderOrderMapper.updateById(order);
 
         return Result.success("🚀 发货成功！商品正在马不停蹄地奔向买家！");
+    }
+
+    @Override
+    public Result<List<Product>> getMerchantProducts(Long userId) {
+        Shop myShop = getMyShop(userId);
+        if (myShop == null) {
+            return Result.error(403, "您还没有开通店铺！");
+        }
+        QueryWrapper<Product> qw = new QueryWrapper<>();
+        qw.eq("shop_id", myShop.getId()).orderByDesc("create_time");
+        return Result.success(productMapper.selectList(qw));
+    }
+
+    @Override
+    public Result<String> updateProduct(Long userId, Long productId, ProductPublishDto dto) {
+        Shop myShop = getMyShop(userId);
+        if (myShop == null) {
+            return Result.error(403, "您还没有开通店铺！");
+        }
+        Product product = productMapper.selectById(productId);
+        if (product == null || !product.getShopId().equals(myShop.getId())) {
+            return Result.error(403, "商品不存在或无权操作！");
+        }
+        if (dto.getName() != null) product.setName(dto.getName());
+        if (dto.getDescription() != null) product.setDescription(dto.getDescription());
+        if (dto.getPrice() != null) product.setPrice(dto.getPrice());
+        if (dto.getStock() != null) product.setStock(dto.getStock());
+        if (dto.getCoverImage() != null) product.setCoverImage(dto.getCoverImage());
+        productMapper.updateById(product);
+        return Result.success("商品信息更新成功！");
+    }
+
+    @Override
+    public Result<String> toggleProductStatus(Long userId, Long productId, Integer status) {
+        Shop myShop = getMyShop(userId);
+        if (myShop == null) {
+            return Result.error(403, "您还没有开通店铺！");
+        }
+        Product product = productMapper.selectById(productId);
+        if (product == null || !product.getShopId().equals(myShop.getId())) {
+            return Result.error(403, "商品不存在或无权操作！");
+        }
+        product.setStatus(status);
+        productMapper.updateById(product);
+        return Result.success(status == 1 ? "商品已上架！" : "商品已下架！");
+    }
+
+    @Override
+    public Result<String> deleteProduct(Long userId, Long productId) {
+        Shop myShop = getMyShop(userId);
+        if (myShop == null) {
+            return Result.error(403, "您还没有开通店铺！");
+        }
+        Product product = productMapper.selectById(productId);
+        if (product == null || !product.getShopId().equals(myShop.getId())) {
+            return Result.error(403, "商品不存在或无权操作！");
+        }
+        productMapper.deleteById(productId);
+        return Result.success("商品已删除！");
+    }
+
+    @Override
+    public Result<Shop> getShopInfo(Long userId) {
+        Shop shop = getMyShop(userId);
+        if (shop == null) {
+            return Result.error(404, "您还没有开通店铺！");
+        }
+        return Result.success(shop);
+    }
+
+    @Override
+    public Result<String> updateShopInfo(Long userId, ShopApplyDto dto) {
+        Shop shop = getMyShop(userId);
+        if (shop == null) {
+            return Result.error(404, "您还没有开通店铺！");
+        }
+        if (dto.getName() != null) shop.setName(dto.getName());
+        if (dto.getDescription() != null) shop.setDescription(dto.getDescription());
+        shopMapper.updateById(shop);
+        return Result.success("店铺信息更新成功！");
+    }
+
+    @Override
+    public Result<Map<String, Object>> getDashboard(Long userId) {
+        Shop shop = getMyShop(userId);
+        if (shop == null) {
+            return Result.error(403, "您还没有开通店铺！");
+        }
+        Map<String, Object> data = new HashMap<>();
+        // 总订单数
+        QueryWrapper<TradeOrder> allQw = new QueryWrapper<>();
+        allQw.eq("shop_id", shop.getId());
+        data.put("totalOrders", traderOrderMapper.selectCount(allQw));
+        // 待发货数
+        QueryWrapper<TradeOrder> pendingQw = new QueryWrapper<>();
+        pendingQw.eq("shop_id", shop.getId()).eq("status", 1);
+        data.put("pendingDelivery", traderOrderMapper.selectCount(pendingQw));
+        // 商品数
+        QueryWrapper<Product> productQw = new QueryWrapper<>();
+        productQw.eq("shop_id", shop.getId());
+        data.put("totalProducts", productMapper.selectCount(productQw));
+        // 店铺名
+        data.put("shopName", shop.getName());
+        data.put("shopStatus", shop.getStatus());
+        return Result.success(data);
+    }
+
+    private Shop getMyShop(Long userId) {
+        QueryWrapper<Shop> qw = new QueryWrapper<>();
+        qw.eq("user_id", userId);
+        return shopMapper.selectOne(qw);
     }
 }

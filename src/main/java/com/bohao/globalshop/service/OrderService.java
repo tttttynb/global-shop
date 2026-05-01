@@ -28,4 +28,7 @@ public interface OrderService {
 
     //提交商品评价
     Result<String> submitReview(Long userId, ReviewSubmitDto dto);
+
+    // 获取订单详情
+    Result<OrderVo> getOrderDetail(Long userId, Long orderId);
 }

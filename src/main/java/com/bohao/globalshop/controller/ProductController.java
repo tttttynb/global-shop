@@ -8,6 +8,7 @@ import com.bohao.globalshop.repository.EsProductRepository;
 import com.bohao.globalshop.service.ProductService;
 import com.bohao.globalshop.service.impl.ProductServiceImpl;
 import com.bohao.globalshop.vo.ProductVo;
+import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
@@ -16,6 +17,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 @RequiredArgsConstructor
 @RestController
@@ -30,6 +32,27 @@ public class ProductController {
     @GetMapping("/list")
     public Result<List<ProductVo>> getList() {
         return productService.getProductListWithShop();
+    }
+
+    @GetMapping("/list/paged")
+    public Result<Map<String, Object>> getListPaged(
+            @RequestParam(required = false) Long categoryId,
+            @RequestParam(required = false, defaultValue = "latest") String sort,
+            @RequestParam(defaultValue = "1") Integer page,
+            @RequestParam(defaultValue = "12") Integer size) {
+        return productService.getProductListPaged(categoryId, sort, page, size);
+    }
+
+    @PostMapping("/favorite/{id}")
+    public Result<String> toggleFavorite(HttpServletRequest request, @PathVariable("id") Long productId) {
+        Long userId = (Long) request.getAttribute("currentUserId");
+        return productService.toggleFavorite(userId, productId);
+    }
+
+    @GetMapping("/favorites")
+    public Result<List<ProductVo>> getFavorites(HttpServletRequest request) {
+        Long userId = (Long) request.getAttribute("currentUserId");
+        return productService.getFavorites(userId);
     }
 
     // 获取商品的评价列表

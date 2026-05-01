@@ -9,9 +9,13 @@ import java.util.List;
 
 @Data
 public class OrderVo {
-    private Long id;//主订单号
-    private BigDecimal totalAmount;//订单总金额
-    private Integer status;//支付状态
-    private LocalDateTime createTime;//下单时间
-    private List<TradeOrderItem> items;//装主订单下的所有子商品明细
+    private Long id;
+    private BigDecimal totalAmount;
+    private Integer status;
+    private BigDecimal discountAmount;
+    private String receiverName;
+    private String receiverPhone;
+    private String receiverAddress;
+    private LocalDateTime createTime;
+    private List<TradeOrderItem> items;
 }

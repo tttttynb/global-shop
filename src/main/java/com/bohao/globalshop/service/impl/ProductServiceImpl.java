@@ -4,9 +4,11 @@ import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.bohao.globalshop.common.Result;
 import com.bohao.globalshop.entity.Product;
+import com.bohao.globalshop.entity.ProductFavorite;
 import com.bohao.globalshop.entity.ProductReview;
 import com.bohao.globalshop.entity.Shop;
 import com.bohao.globalshop.entity.User;
+import com.bohao.globalshop.mapper.ProductFavoriteMapper;
 import com.bohao.globalshop.mapper.ProductMapper;
 import com.bohao.globalshop.mapper.ProductReviewMapper;
 import com.bohao.globalshop.mapper.ShopMapper;
@@ -24,6 +26,7 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -39,6 +42,7 @@ import java.util.stream.Collectors;
 public class ProductServiceImpl implements ProductService {
 
     private final ProductMapper productMapper;
+    private final ProductFavoriteMapper productFavoriteMapper;
     private final ShopMapper shopMapper;
     private final ProductReviewMapper productReviewMapper;
     private final UserMapper userMapper;
@@ -89,6 +93,60 @@ public class ProductServiceImpl implements ProductService {
             voList.add(vo);
         }
         return Result.success(voList);
+    }
+
+    @Override
+    public Result<Map<String, Object>> getProductListPaged(Long categoryId, String sort, Integer page, Integer size) {
+        QueryWrapper<Product> qw = new QueryWrapper<>();
+        qw.eq("status", 1);
+        if (categoryId != null) {
+            qw.eq("category_id", categoryId);
+        }
+        if ("price_asc".equals(sort)) {
+            qw.orderByAsc("price");
+        } else if ("price_desc".equals(sort)) {
+            qw.orderByDesc("price");
+        } else if ("sales".equals(sort)) {
+            qw.orderByDesc("sales_count");
+        } else {
+            qw.orderByDesc("create_time");
+        }
+
+        long total = productMapper.selectCount(qw);
+        int offset = (page - 1) * size;
+        qw.last("LIMIT " + offset + "," + size);
+        List<Product> products = productMapper.selectList(qw);
+
+        Set<Long> shopIds = products.stream()
+                .map(Product::getShopId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<Long, Shop> shopMap = shopIds.isEmpty()
+                ? Map.of()
+                : shopMapper.selectBatchIds(shopIds).stream()
+                        .collect(Collectors.toMap(Shop::getId, Function.identity()));
+
+        List<ProductVo> voList = new ArrayList<>();
+        for (Product product : products) {
+            ProductVo vo = new ProductVo();
+            vo.setId(product.getId());
+            vo.setShopId(product.getShopId());
+            vo.setName(product.getName());
+            vo.setDescription(product.getDescription());
+            vo.setPrice(product.getPrice());
+            vo.setStock(product.getStock());
+            vo.setCoverImage(product.getCoverImage());
+            Shop shop = product.getShopId() != null ? shopMap.get(product.getShopId()) : null;
+            vo.setShopName(shop != null ? shop.getName() : "平台自营店");
+            voList.add(vo);
+        }
+
+        Map<String, Object> result = new HashMap<>();
+        result.put("list", voList);
+        result.put("total", total);
+        result.put("page", page);
+        result.put("size", size);
+        return Result.success(result);
     }
 
     @Override
@@ -189,5 +247,48 @@ public class ProductServiceImpl implements ProductService {
                 lock.unlock();
             }
         }
+    }
+
+    @Override
+    public Result<String> toggleFavorite(Long userId, Long productId) {
+        QueryWrapper<ProductFavorite> qw = new QueryWrapper<>();
+        qw.eq("user_id", userId).eq("product_id", productId);
+        ProductFavorite existing = productFavoriteMapper.selectOne(qw);
+        if (existing != null) {
+            productFavoriteMapper.deleteById(existing.getId());
+            return Result.success("已取消收藏");
+        } else {
+            ProductFavorite fav = new ProductFavorite();
+            fav.setUserId(userId);
+            fav.setProductId(productId);
+            fav.setCreateTime(java.time.LocalDateTime.now());
+            productFavoriteMapper.insert(fav);
+            return Result.success("已收藏");
+        }
+    }
+
+    @Override
+    public Result<List<ProductVo>> getFavorites(Long userId) {
+        QueryWrapper<ProductFavorite> qw = new QueryWrapper<>();
+        qw.eq("user_id", userId).orderByDesc("create_time");
+        List<ProductFavorite> favList = productFavoriteMapper.selectList(qw);
+        List<ProductVo> voList = new ArrayList<>();
+        for (ProductFavorite fav : favList) {
+            Product product = productMapper.selectById(fav.getProductId());
+            if (product != null) {
+                ProductVo vo = new ProductVo();
+                vo.setId(product.getId());
+                vo.setShopId(product.getShopId());
+                vo.setName(product.getName());
+                vo.setDescription(product.getDescription());
+                vo.setPrice(product.getPrice());
+                vo.setStock(product.getStock());
+                vo.setCoverImage(product.getCoverImage());
+                Shop shop = product.getShopId() != null ? shopMapper.selectById(product.getShopId()) : null;
+                vo.setShopName(shop != null ? shop.getName() : "平台自营店");
+                voList.add(vo);
+            }
+        }
+        return Result.success(voList);
     }
 }

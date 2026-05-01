@@ -2,7 +2,10 @@ package com.bohao.globalshop.controller;
 
 import com.bohao.globalshop.common.Result;
 import com.bohao.globalshop.dto.OrderCreateDto;
+import com.bohao.globalshop.dto.RefundApplyDto;
+import com.bohao.globalshop.entity.RefundOrder;
 import com.bohao.globalshop.service.OrderService;
+import com.bohao.globalshop.service.RefundService;
 import com.bohao.globalshop.vo.OrderVo;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -15,6 +18,8 @@ import java.util.List;
 public class OrderController {
     @Autowired
     private OrderService orderService;
+    @Autowired
+    private RefundService refundService;
 
     @PostMapping("/create")
     public Result<String> createOrder(HttpServletRequest request, @RequestBody OrderCreateDto dto) {
@@ -54,5 +59,35 @@ public class OrderController {
     public Result<String> submitReview(HttpServletRequest request, @RequestBody com.bohao.globalshop.dto.ReviewSubmitDto dto) {
         Long userId = (Long) request.getAttribute("currentUserId");
         return orderService.submitReview(userId, dto);
+    }
+
+    @GetMapping("/{id}")
+    public Result<OrderVo> getOrderDetail(HttpServletRequest request, @PathVariable("id") Long orderId) {
+        Long userId = (Long) request.getAttribute("currentUserId");
+        return orderService.getOrderDetail(userId, orderId);
+    }
+
+    @PostMapping("/refund/apply")
+    public Result<String> applyRefund(HttpServletRequest request, @RequestBody RefundApplyDto dto) {
+        Long userId = (Long) request.getAttribute("currentUserId");
+        return refundService.applyRefund(userId, dto);
+    }
+
+    @GetMapping("/refund/list")
+    public Result<List<RefundOrder>> getMyRefunds(HttpServletRequest request) {
+        Long userId = (Long) request.getAttribute("currentUserId");
+        return refundService.getMyRefunds(userId);
+    }
+
+    @GetMapping("/refund/{id}")
+    public Result<RefundOrder> getRefundDetail(HttpServletRequest request, @PathVariable("id") Long refundId) {
+        Long userId = (Long) request.getAttribute("currentUserId");
+        return refundService.getRefundDetail(userId, refundId);
+    }
+
+    @PostMapping("/refund/{id}/cancel")
+    public Result<String> cancelRefund(HttpServletRequest request, @PathVariable("id") Long refundId) {
+        Long userId = (Long) request.getAttribute("currentUserId");
+        return refundService.cancelRefund(userId, refundId);
     }
 }

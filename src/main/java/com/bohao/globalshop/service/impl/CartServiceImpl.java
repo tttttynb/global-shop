@@ -121,4 +121,26 @@ public class CartServiceImpl implements CartService {
         cartItemMapper.deleteById(cartItemId);
         return Result.success("商品已成功移出购物车！");
     }
+
+    @Override
+    public Result<String> updateQuantity(Long userId, Long cartItemId, Integer quantity) {
+        if (quantity == null || quantity < 1) {
+            return Result.error(400, "商品数量不能小于1！");
+        }
+        CartItem item = cartItemMapper.selectById(cartItemId);
+        if (item == null) {
+            return Result.error(400, "购物车里没找到这件商品！");
+        }
+        if (!item.getUserId().equals(userId)) {
+            return Result.error(403, "越权操作！你不能修改别人的购物车！");
+        }
+        // 检查库存
+        Product product = productMapper.selectById(item.getProductId());
+        if (product != null && quantity > product.getStock()) {
+            return Result.error(400, "抱歉，商品库存仅剩 " + product.getStock() + " 件！");
+        }
+        item.setQuantity(quantity);
+        cartItemMapper.updateById(item);
+        return Result.success("购物车数量已更新！");
+    }
 }

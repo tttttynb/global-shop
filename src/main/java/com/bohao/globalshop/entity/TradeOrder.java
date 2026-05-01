@@ -18,6 +18,11 @@ public class TradeOrder {
     // 移除 productId 和 quantity，由 TradeOrderItem 承担
     private BigDecimal totalAmount;
     private Integer status;
+    private Long couponId;
+    private BigDecimal discountAmount;
+    private String receiverName;
+    private String receiverPhone;
+    private String receiverAddress;
     private LocalDateTime createTime;
     private LocalDateTime updateTime;
 }

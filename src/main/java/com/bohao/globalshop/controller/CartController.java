@@ -37,4 +37,10 @@ public class CartController {
         Long userId = (Long) request.getAttribute("currentUserId");
         return cartService.removeCartItem(userId, cartItemId);
     }
+
+    @PutMapping("/update/{id}")
+    public Result<String> updateQuantity(HttpServletRequest request, @PathVariable("id") Long cartItemId, @RequestParam Integer quantity) {
+        Long userId = (Long) request.getAttribute("currentUserId");
+        return cartService.updateQuantity(userId, cartItemId, quantity);
+    }
 }

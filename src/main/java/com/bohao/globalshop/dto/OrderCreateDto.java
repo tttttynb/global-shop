@@ -6,4 +6,6 @@ import lombok.Data;
 public class OrderCreateDto {
     private Long productId;
     private Integer quantity;
+    private Long addressId;
+    private Long couponId;
 }

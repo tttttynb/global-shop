@@ -34,6 +34,9 @@ public class OrderServiceImpl implements OrderService {
     private final ProductReviewMapper productReviewMapper;
     private final DefaultRedisScript<Long> seckillScript;
     private final RabbitTemplate rabbitTemplate;
+    private final UserAddressMapper userAddressMapper;
+    private final CouponMapper couponMapper;
+    private final UserCouponMapper userCouponMapper;
 
     @Override
     @Transactional// 开启数据库事务，保证扣库存和下订单同生共死！！！
@@ -55,11 +58,51 @@ public class OrderServiceImpl implements OrderService {
         //计算总价 (单价 × 数量，BigDecimal 的乘法必须用 multiply 方法)
         BigDecimal totalAmount = product.getPrice().multiply(new BigDecimal(dto.getQuantity()));
 
+        // 优惠券抵扣逻辑
+        BigDecimal discountAmount = BigDecimal.ZERO;
+        if (dto.getCouponId() != null) {
+            com.bohao.globalshop.entity.UserCoupon userCoupon = userCouponMapper.selectById(dto.getCouponId());
+            if (userCoupon != null && userCoupon.getUserId().equals(userId) && userCoupon.getStatus() == 0) {
+                com.bohao.globalshop.entity.Coupon coupon = couponMapper.selectById(userCoupon.getCouponId());
+                if (coupon != null && totalAmount.compareTo(coupon.getMinAmount()) >= 0) {
+                    if (coupon.getType() == 1) {
+                        discountAmount = coupon.getDiscountValue();
+                    } else if (coupon.getType() == 2) {
+                        discountAmount = totalAmount.multiply(BigDecimal.ONE.subtract(coupon.getDiscountValue().divide(new BigDecimal("10"), 2, BigDecimal.ROUND_HALF_UP)));
+                    }
+                    if (discountAmount.compareTo(totalAmount) > 0) {
+                        discountAmount = totalAmount;
+                    }
+                    totalAmount = totalAmount.subtract(discountAmount);
+                    // 标记优惠券已使用
+                    userCoupon.setStatus(1);
+                    userCoupon.setUseTime(java.time.LocalDateTime.now());
+                    userCouponMapper.updateById(userCoupon);
+                }
+            }
+        }
+
         // 1. 创建主订单
         TradeOrder order = new TradeOrder();
         order.setUserId(userId);
+        order.setShopId(product.getShopId());
         order.setTotalAmount(totalAmount);
+        order.setDiscountAmount(discountAmount);
+        order.setCouponId(dto.getCouponId());
         order.setStatus(0);
+        // 地址快照
+        if (dto.getAddressId() != null) {
+            UserAddress address = userAddressMapper.selectById(dto.getAddressId());
+            if (address != null && address.getUserId().equals(userId)) {
+                order.setReceiverName(address.getReceiverName());
+                order.setReceiverPhone(address.getPhone());
+                String fullAddress = (address.getProvince() != null ? address.getProvince() : "")
+                        + (address.getCity() != null ? address.getCity() : "")
+                        + (address.getDistrict() != null ? address.getDistrict() : "")
+                        + address.getDetailAddress();
+                order.setReceiverAddress(fullAddress);
+            }
+        }
         traderOrderMapper.insert(order);
 
         // 🚀 架构升级：把订单号作为消息，直接扔进 RabbitMQ 的延迟队列（等待区）！
@@ -95,6 +138,10 @@ public class OrderServiceImpl implements OrderService {
             vo.setId(order.getId());
             vo.setTotalAmount(order.getTotalAmount());
             vo.setStatus(order.getStatus());
+            vo.setDiscountAmount(order.getDiscountAmount());
+            vo.setReceiverName(order.getReceiverName());
+            vo.setReceiverPhone(order.getReceiverPhone());
+            vo.setReceiverAddress(order.getReceiverAddress());
             vo.setCreateTime(order.getCreateTime());
             //核心：根据主订单的ID，去trade_order_item表里查出属于它的所有商品！
             QueryWrapper<TradeOrderItem> itemWrapper = new QueryWrapper<>();
@@ -325,5 +372,29 @@ public class OrderServiceImpl implements OrderService {
         traderOrderMapper.updateById(mainOrder);
 
         return Result.success("🎉 感谢您的五星好评！评价发布成功！");
+    }
+
+    @Override
+    public Result<OrderVo> getOrderDetail(Long userId, Long orderId) {
+        TradeOrder order = traderOrderMapper.selectById(orderId);
+        if (order == null) {
+            return Result.error(404, "订单不存在！");
+        }
+        if (!order.getUserId().equals(userId)) {
+            return Result.error(403, "无权查看此订单！");
+        }
+        OrderVo vo = new OrderVo();
+        vo.setId(order.getId());
+        vo.setTotalAmount(order.getTotalAmount());
+        vo.setStatus(order.getStatus());
+        vo.setDiscountAmount(order.getDiscountAmount());
+        vo.setReceiverName(order.getReceiverName());
+        vo.setReceiverPhone(order.getReceiverPhone());
+        vo.setReceiverAddress(order.getReceiverAddress());
+        vo.setCreateTime(order.getCreateTime());
+        QueryWrapper<TradeOrderItem> itemWrapper = new QueryWrapper<>();
+        itemWrapper.eq("order_id", order.getId());
+        vo.setItems(tradeOrderItemMapper.selectList(itemWrapper));
+        return Result.success(vo);
     }
 }

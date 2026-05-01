@@ -1,6 +1,7 @@
 package com.bohao.globalshop.controller;
 
 import co.elastic.clients.elasticsearch._types.KnnQuery;
+import com.bohao.globalshop.common.Result;
 import com.bohao.globalshop.entity.EsProduct;
 import com.bohao.globalshop.repository.EsProductRepository;
 import lombok.RequiredArgsConstructor;
@@ -33,58 +34,63 @@ public class AiSearchController {
      * 作用：把数据库里的老商品，全部掏出来喂给大模型，生成向量后再存回 ES
      */
     @GetMapping("/init-vectors")
-    public String initVectors() {
-        Iterable<EsProduct> products = esProductRepository.findAll();
-        int count = 0;
-        for (EsProduct product : products) {
-            String textToEmbed = "商品名称：" + product.getName() + "。商品描述：" + product.getDescription();
-            float[] vectors = embeddingModel.embed(textToEmbed);
-            List<Float> vectorList = new ArrayList<>();
-            for (float v : vectors) {
-                vectorList.add(v);
-            }
-            product.setVector(vectorList);
-            esProductRepository.save(product);
+    public Result<String> initVectors() {
+        try {
+            Iterable<EsProduct> products = esProductRepository.findAll();
+            int count = 0;
+            for (EsProduct product : products) {
+                String textToEmbed = "商品名称：" + product.getName() + "。商品描述：" + product.getDescription();
+                float[] vectors = embeddingModel.embed(textToEmbed);
+                List<Float> vectorList = new ArrayList<>();
+                for (float v : vectors) {
+                    vectorList.add(v);
+                }
+                product.setVector(vectorList);
+                esProductRepository.save(product);
 
-            count++;
-            System.out.println("成功注入向量 -> " + product.getName());
+                count++;
+                System.out.println("成功注入向量 -> " + product.getName());
+            }
+            return Result.success("太强了！成功为 " + count + " 个商品注入了 AI 语义向量！");
+        } catch (Exception e) {
+            System.err.println("向量注入失败: " + e.getMessage());
+            e.printStackTrace();
+            return Result.error(500, "向量注入失败: " + e.getMessage());
         }
-        return "太强了！成功为 " + count + " 个商品注入了 AI 语义向量！";
     }
 
     @GetMapping("/semantic")
-    public List<EsProduct> semanticSearch(@RequestParam String keyWord) {
-        System.out.println("买家搜索原话：" + keyWord);
-        float[] userVector = embeddingModel.embed(keyWord);
-        List<Float> vectorList = new ArrayList<>();
-        for (float v : userVector) {
-            vectorList.add(v);
+    public Result<List<EsProduct>> semanticSearch(@RequestParam String keyWord) {
+        try {
+            System.out.println("买家搜索原话：" + keyWord);
+            float[] userVector = embeddingModel.embed(keyWord);
+            List<Float> vectorList = new ArrayList<>();
+            for (float v : userVector) {
+                vectorList.add(v);
+            }
+
+            NativeQuery query = NativeQuery.builder()
+                    .withQuery(q -> q.knn(k -> k
+                            .field("vector")
+                            .queryVector(vectorList)
+                            .numCandidates(50)
+                    ))
+                     .withMaxResults(10)
+                    .build();
+
+            SearchHits<EsProduct> hits = elasticsearchOperations.search(query, EsProduct.class);
+            List<EsProduct> result = new ArrayList<>();
+            for (SearchHit<EsProduct> hit : hits) {
+                EsProduct product = hit.getContent();
+                System.out.println("🎯 命中商品: [" + product.getName() + "]，AI 相似度得分: " + hit.getScore());
+                result.add(product);
+            }
+
+            return Result.success(result);
+        } catch (Exception e) {
+            System.err.println("语义搜索失败: " + e.getMessage());
+            e.printStackTrace();
+            return Result.error(500, "搜索失败: " + e.getMessage());
         }
-        // 2.空间跃迁：构建 KNN (K近邻) 向量查询
-        KnnQuery knnQuery = KnnQuery.of(k -> k
-                .field("vector")
-                .queryVector(vectorList)
-                .k(10)
-                .numCandidates(50)
-        );
-
-        NativeQuery query = NativeQuery.builder()
-                .withQuery(q -> q.knn(k -> k
-                        .field("vector")
-                        .queryVector(vectorList)
-                        .numCandidates(10)
-                ))
-                .build();
-
-        SearchHits<EsProduct> hits = elasticsearchOperations.search(query, EsProduct.class);
-        List<EsProduct> result = new ArrayList<>();
-        for (SearchHit<EsProduct> hit : hits) {
-            EsProduct product = hit.getContent();
-            System.out.println("🎯 命中商品: [" + product.getName() + "]，AI 相似度得分: " + hit.getScore());
-            result.add(product);
-        }
-
-        return result;
-
     }
 }

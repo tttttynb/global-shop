@@ -10,6 +10,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/live")
@@ -69,5 +70,20 @@ public class LiveController {
     public Result<String> toggleAiAssistant(HttpServletRequest request, @PathVariable("id") Long roomId, @RequestParam Boolean enabled) {
         Long userId = (Long) request.getAttribute("currentUserId");
         return liveService.toggleAiAssistant(userId, roomId, enabled);
+    }
+
+    // 获取历史弹幕
+    @GetMapping("/{id}/messages")
+    public Result<Map<String, Object>> getHistoryMessages(
+            @PathVariable("id") Long roomId,
+            @RequestParam(defaultValue = "1") Integer page,
+            @RequestParam(defaultValue = "50") Integer size) {
+        return liveService.getHistoryMessages(roomId, page, size);
+    }
+
+    // 获取直播间商品列表（完整信息）
+    @GetMapping("/{id}/products")
+    public Result<List<Map<String, Object>>> getLiveProducts(@PathVariable("id") Long roomId) {
+        return liveService.getLiveProducts(roomId);
     }
 }
