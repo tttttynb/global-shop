@@ -3,6 +3,7 @@ package com.bohao.globalshop.entity;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.baomidou.mybatisplus.annotation.Version;
 import lombok.Data;
 
 import java.math.BigDecimal;
@@ -23,5 +24,7 @@ public class Coupon {
     private Integer totalCount;
     private Integer remainCount;
     private Integer status; // 0-未开始 1-进行中 2-已结束
+    @Version
+    private Integer version;
     private LocalDateTime createTime;
 }

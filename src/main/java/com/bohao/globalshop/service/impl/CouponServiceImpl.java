@@ -77,21 +77,24 @@ public class CouponServiceImpl implements CouponService {
         if (now.isBefore(coupon.getStartTime()) || now.isAfter(coupon.getEndTime())) {
             return Result.error(400, "优惠券不在有效期内！");
         }
-        // 检查是否已领取
+        // 防一人多领：快速路径检查
         QueryWrapper<UserCoupon> checkQw = new QueryWrapper<>();
         checkQw.eq("user_id", userId).eq("coupon_id", couponId);
         if (userCouponMapper.selectCount(checkQw) > 0) {
             return Result.error(400, "您已领取过该优惠券！");
         }
-        // 扣减库存
+        // 扣减库存（乐观锁保障：updateById 带 version 校验，冲突时返回 0）
         coupon.setRemainCount(coupon.getRemainCount() - 1);
-        couponMapper.updateById(coupon);
-        // 创建用户优惠券记录
+        int rows = couponMapper.updateById(coupon);
+        if (rows == 0) {
+            return Result.error(400, "抢购失败，请重试！");
+        }
+        // 创建领取记录（唯一约束兜底极端并发场景）
         UserCoupon userCoupon = new UserCoupon();
         userCoupon.setUserId(userId);
         userCoupon.setCouponId(couponId);
         userCoupon.setStatus(0);
-        userCoupon.setCreateTime(LocalDateTime.now());
+        userCoupon.setCreateTime(now);
         userCouponMapper.insert(userCoupon);
         return Result.success("领取成功！");
     }
