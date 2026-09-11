@@ -21,6 +21,7 @@ public class RefundServiceImpl implements RefundService {
     private final ShopMapper shopMapper;
     private final ProductMapper productMapper;
     private final UserMapper userMapper;
+    private final com.bohao.globalshop.service.SkuService skuService;
 
     @Override
     public Result<String> applyRefund(Long userId, RefundApplyDto dto) {
@@ -116,13 +117,19 @@ public class RefundServiceImpl implements RefundService {
             buyer.setBalance(buyer.getBalance().add(refund.getRefundAmount()));
             userMapper.updateById(buyer);
         }
-        // 退还库存
+        // 退还库存（🆕 SKU 化：有 SKU 快照回补 SKU 维度，存量旧订单回补商品维度）
         TradeOrderItem orderItem = tradeOrderItemMapper.selectById(refund.getOrderItemId());
         if (orderItem != null) {
-            Product product = productMapper.selectById(orderItem.getProductId());
-            if (product != null) {
-                product.setStock(product.getStock() + orderItem.getQuantity());
-                productMapper.updateById(product);
+            if (orderItem.getSkuId() != null) {
+                skuService.restoreStock(orderItem.getSkuId(), orderItem.getQuantity());
+                skuService.restoreRedisStock(orderItem.getSkuId(), orderItem.getQuantity());
+                skuService.syncProductAggregate(orderItem.getProductId());
+            } else {
+                Product product = productMapper.selectById(orderItem.getProductId());
+                if (product != null) {
+                    product.setStock(product.getStock() + orderItem.getQuantity());
+                    productMapper.updateById(product);
+                }
             }
         }
         return Result.success("退款审核通过，已退还用户余额！");

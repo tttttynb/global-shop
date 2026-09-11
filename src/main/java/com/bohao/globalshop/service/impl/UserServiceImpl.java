@@ -17,6 +17,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
 import java.util.List;
 
 @Service
@@ -169,5 +170,21 @@ public class UserServiceImpl implements UserService {
             addr.setIsDefault(false);
             userAddressMapper.updateById(addr);
         }
+    }
+
+    @Override
+    @org.springframework.transaction.annotation.Transactional
+    public Result<String> rechargeBalance(Long userId, BigDecimal amount) {
+        if (amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
+            return Result.error(400, "充值金额必须大于0！");
+        }
+        User user = userMapper.selectById(userId);
+        if (user == null) {
+            return Result.error(404, "用户不存在！");
+        }
+        BigDecimal currentBalance = user.getBalance() != null ? user.getBalance() : BigDecimal.ZERO;
+        user.setBalance(currentBalance.add(amount));
+        userMapper.updateById(user);
+        return Result.success("充值成功！当前余额：" + user.getBalance() + " 元");
     }
 }

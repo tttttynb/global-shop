@@ -16,6 +16,12 @@ public class OrderVo {
     private String receiverName;
     private String receiverPhone;
     private String receiverAddress;
+    private String paymentType;
+    private Long paymentId;
+    private LocalDateTime payTime;
+    private String carrierName;
+    private String trackingNumber;
+    private LocalDateTime shippedAt;
     private LocalDateTime createTime;
     private List<TradeOrderItem> items;
 }

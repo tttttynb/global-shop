@@ -12,7 +12,9 @@ import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 
+import java.math.BigDecimal;
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/user")
@@ -64,5 +66,17 @@ public class UserController {
     public Result<String> deleteAddress(HttpServletRequest request, @PathVariable("id") Long addressId) {
         Long userId = (Long) request.getAttribute("currentUserId");
         return userService.deleteAddress(userId, addressId);
+    }
+
+    /**
+     * 余额充值
+     * <p>
+     * 请求体：{ "amount": 100.00 }
+     */
+    @PostMapping("/recharge")
+    public Result<String> recharge(HttpServletRequest request, @RequestBody Map<String, BigDecimal> body) {
+        Long userId = (Long) request.getAttribute("currentUserId");
+        BigDecimal amount = body.get("amount");
+        return userService.rechargeBalance(userId, amount);
     }
 }

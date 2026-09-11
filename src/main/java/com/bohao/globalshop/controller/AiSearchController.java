@@ -2,8 +2,12 @@ package com.bohao.globalshop.controller;
 
 import co.elastic.clients.elasticsearch._types.KnnQuery;
 import com.bohao.globalshop.common.Result;
+import com.bohao.globalshop.common.UserContextHolder;
 import com.bohao.globalshop.entity.EsProduct;
 import com.bohao.globalshop.repository.EsProductRepository;
+import com.bohao.globalshop.service.ImageSearchService;
+import com.bohao.globalshop.service.PersonalizationService;
+import com.bohao.globalshop.vo.ImageSearchResultVo;
 import lombok.RequiredArgsConstructor;
 import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.data.elasticsearch.client.elc.NativeQuery;
@@ -11,12 +15,15 @@ import org.springframework.data.elasticsearch.core.ElasticsearchOperations;
 import org.springframework.data.elasticsearch.core.SearchHit;
 import org.springframework.data.elasticsearch.core.SearchHits;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 @RestController
 @RequestMapping("/api/ai")
@@ -24,10 +31,34 @@ import java.util.List;
 public class AiSearchController {
     // 1. 注入 Spring AI 的核心大模型客户端
     private final EmbeddingModel embeddingModel;
-    //2. 注入基础的 ES 增删改查接口
     private final EsProductRepository esProductRepository;
-    //3. 注入 Spring Data ES 的高级操作模板 (用于执行复杂的 KNN 向量检索)
     private final ElasticsearchOperations elasticsearchOperations;
+    private final PersonalizationService personalizationService;
+    private final ImageSearchService imageSearchService;
+
+    /**
+     * 🆕 接口三：【AI 以图搜图】（Phase 2 - F4）
+     * 上传商品照片 → qwen-vl 视觉理解 → 语义向量召回相似商品 → 个性化重排
+     */
+    @PostMapping("/image-search")
+    public Result<ImageSearchResultVo> imageSearch(@RequestParam("file") MultipartFile file) {
+        // 1. 基础校验：非空 / 大小 / 类型
+        if (file == null || file.isEmpty()) {
+            return Result.error(400, "请先选择一张商品图片！");
+        }
+        if (file.getSize() > 5 * 1024 * 1024) {
+            return Result.error(400, "图片不能超过 5MB，请压缩后再试！");
+        }
+        String contentType = file.getContentType();
+        if (contentType == null || !Set.of("image/jpeg", "image/png", "image/webp", "image/gif", "image/bmp").contains(contentType.toLowerCase())) {
+            return Result.error(400, "仅支持 jpg/png/webp/gif/bmp 格式的图片！");
+        }
+        try {
+            return imageSearchService.searchByImage(file.getBytes(), contentType.toLowerCase());
+        } catch (Exception e) {
+            return Result.error(500, "以图搜图失败: " + e.getMessage());
+        }
+    }
 
     /**
      * 接口一：【AI 灵魂注入机】
@@ -86,7 +117,11 @@ public class AiSearchController {
                 result.add(product);
             }
 
-            return Result.success(result);
+            // 🚀 个性化重排：根据用户消费层级调整结果顺序
+            Long userId = UserContextHolder.getCurrentUserId();
+            List<EsProduct> personalized = personalizationService.personalizeSearchResults(result, userId);
+
+            return Result.success(personalized);
         } catch (Exception e) {
             System.err.println("语义搜索失败: " + e.getMessage());
             e.printStackTrace();

@@ -5,11 +5,14 @@ import com.bohao.globalshop.common.Result;
 import com.bohao.globalshop.dto.CartAddDto;
 import com.bohao.globalshop.entity.CartItem;
 import com.bohao.globalshop.entity.Product;
+import com.bohao.globalshop.entity.ProductSku;
 import com.bohao.globalshop.entity.Shop;
 import com.bohao.globalshop.mapper.CartItemMapper;
 import com.bohao.globalshop.mapper.ProductMapper;
+import com.bohao.globalshop.mapper.ProductSkuMapper;
 import com.bohao.globalshop.mapper.ShopMapper;
 import com.bohao.globalshop.service.CartService;
+import com.bohao.globalshop.service.SkuService;
 import com.bohao.globalshop.vo.CartItemVo;
 import com.bohao.globalshop.vo.CartShopVo;
 import lombok.RequiredArgsConstructor;
@@ -32,6 +35,10 @@ public class CartServiceImpl implements CartService {
 
     private final ShopMapper shopMapper;
 
+    private final ProductSkuMapper productSkuMapper;
+
+    private final SkuService skuService;
+
     @Override
     public Result<String> addToCart(Long userId, CartAddDto dto) {
         // 1. 检查商品是否存在，或者是否下架
@@ -39,10 +46,19 @@ public class CartServiceImpl implements CartService {
         if (product == null || product.getStatus() == 0) {
             return Result.error(400, "哎呀，商品不存在或已下架！");
         }
-        // 2. 查一下这个用户的购物车里，是不是已经有这件商品了？
+        // 1.5 🆕 SKU 解析：skuId 为空自动落到默认 SKU（兼容单规格商品/旧前端）
+        ProductSku sku = skuService.resolveSku(dto.getProductId(), dto.getSkuId());
+        if (sku == null) {
+            return Result.error(400, "哎呀，该商品规格不存在或已停售！");
+        }
+        if (sku.getStock() == null || sku.getStock() < dto.getQuantity()) {
+            return Result.error(400, "抱歉，规格 [" + sku.getSpecText() + "] 库存仅剩 " + sku.getStock() + " 件！");
+        }
+        // 2. 查一下这个用户的购物车里，是不是已经有【同商品同规格】了？
         QueryWrapper<CartItem> queryWrapper = new QueryWrapper<>();
         queryWrapper.eq("user_id", userId)
-                .eq("product_id", dto.getProductId());
+                .eq("product_id", dto.getProductId())
+                .eq("sku_id", sku.getId());
         CartItem existItem = cartItemMapper.selectOne(queryWrapper);
         if (existItem != null) {
             // 3. 如果已经有了，就做“合并同类项”（老数量 + 新数量）
@@ -50,10 +66,12 @@ public class CartServiceImpl implements CartService {
             cartItemMapper.updateById(existItem);
             return Result.success("购物车商品数量已更新！");
         } else {
-            // 4. 如果没有，就创建一条全新的购物车记录
+            // 4. 如果没有，就创建一条全新的购物车记录（带 SKU 快照）
             CartItem newItem = new CartItem();
             newItem.setUserId(userId);
             newItem.setProductId(dto.getProductId());
+            newItem.setSkuId(sku.getId());
+            newItem.setSkuSpec(sku.getSpecText());
             newItem.setQuantity(dto.getQuantity());
             cartItemMapper.insert(newItem);
             return Result.success("成功加入购物车！");
@@ -94,9 +112,17 @@ public class CartServiceImpl implements CartService {
             itemVo.setProductId(product.getId());
             itemVo.setProductName(product.getName());
             itemVo.setCoverImage(product.getCoverImage());
-            itemVo.setPrice(product.getPrice());
+            // 🆕 SKU 化：价格以 SKU 为准（SKU 被商家替换删除时降级用商品聚合价）
+            ProductSku sku = item.getSkuId() != null ? productSkuMapper.selectById(item.getSkuId()) : null;
+            BigDecimal unitPrice = sku != null ? sku.getPrice() : product.getPrice();
+            itemVo.setSkuId(item.getSkuId());
+            itemVo.setSkuSpec(item.getSkuSpec() != null ? item.getSkuSpec() : (sku != null ? sku.getSpecText() : null));
+            if (sku != null && sku.getImage() != null && !sku.getImage().isEmpty()) {
+                itemVo.setCoverImage(sku.getImage());
+            }
+            itemVo.setPrice(unitPrice);
             itemVo.setQuantity(item.getQuantity());
-            itemVo.setItemTotalAmount(product.getPrice().multiply(new BigDecimal(item.getQuantity())));
+            itemVo.setItemTotalAmount(unitPrice.multiply(new BigDecimal(item.getQuantity())));
             //6.把商品塞进对应的VO里
             shopVo.getItems().add(itemVo);
         }
@@ -134,10 +160,17 @@ public class CartServiceImpl implements CartService {
         if (!item.getUserId().equals(userId)) {
             return Result.error(403, "越权操作！你不能修改别人的购物车！");
         }
-        // 检查库存
-        Product product = productMapper.selectById(item.getProductId());
-        if (product != null && quantity > product.getStock()) {
-            return Result.error(400, "抱歉，商品库存仅剩 " + product.getStock() + " 件！");
+        // 检查库存（🆕 优先按 SKU 维度校验）
+        if (item.getSkuId() != null) {
+            ProductSku sku = productSkuMapper.selectById(item.getSkuId());
+            if (sku != null && quantity > sku.getStock()) {
+                return Result.error(400, "抱歉，规格 [" + sku.getSpecText() + "] 库存仅剩 " + sku.getStock() + " 件！");
+            }
+        } else {
+            Product product = productMapper.selectById(item.getProductId());
+            if (product != null && quantity > product.getStock()) {
+                return Result.error(400, "抱歉，商品库存仅剩 " + product.getStock() + " 件！");
+            }
         }
         item.setQuantity(quantity);
         cartItemMapper.updateById(item);

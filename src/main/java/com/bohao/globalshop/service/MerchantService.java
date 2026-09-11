@@ -1,6 +1,7 @@
 package com.bohao.globalshop.service;
 
 import com.bohao.globalshop.common.Result;
+import com.bohao.globalshop.dto.MerchantDeliverDto;
 import com.bohao.globalshop.dto.ProductPublishDto;
 import com.bohao.globalshop.dto.ShopApplyDto;
 import com.bohao.globalshop.entity.Product;
@@ -17,7 +18,7 @@ public interface MerchantService {
 
     Result<List<OrderVo>> getShopOrders(Long userId);
 
-    Result<String> deliverOrder(Long userId, Long orderId);
+    Result<String> deliverOrder(Long userId, MerchantDeliverDto dto);
 
     Result<List<Product>> getMerchantProducts(Long userId);
 

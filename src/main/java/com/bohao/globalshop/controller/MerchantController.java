@@ -2,6 +2,7 @@ package com.bohao.globalshop.controller;
 
 import com.bohao.globalshop.common.Result;
 import com.bohao.globalshop.dto.CouponCreateDto;
+import com.bohao.globalshop.dto.MerchantDeliverDto;
 import com.bohao.globalshop.dto.ProductPublishDto;
 import com.bohao.globalshop.dto.ShopApplyDto;
 import com.bohao.globalshop.entity.Coupon;
@@ -67,10 +68,10 @@ public class MerchantController {
         return merchantService.getShopOrders(userId);
     }
 
-    @PostMapping("/order/deliver/{id}")
-    public Result<String> deliverOrder(HttpServletRequest request, @PathVariable("id") Long orderId) {
+    @PostMapping("/order/deliver")
+    public Result<String> deliverOrder(HttpServletRequest request, @RequestBody MerchantDeliverDto dto) {
         Long userId = (Long) request.getAttribute("currentUserId");
-        return merchantService.deliverOrder(userId, orderId);
+        return merchantService.deliverOrder(userId, dto);
     }
 
     @GetMapping("/shop/info")

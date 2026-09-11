@@ -2,11 +2,19 @@ server:
   port: 8080
 
 spring:
+  # 本地开发敏感配置放在 application-local.yml（已被 .gitignore 忽略，不要提交）
+  profiles:
+    active: local
+  # 🆕 以图搜图（Phase 2 - F4）：放开上传限制，业务层再按 5MB 校验
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 10MB
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
     url: jdbc:mysql://localhost:3306/global_shop?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai
     username: root
-    password: 1234
+    password: ${DB_PASSWORD:}
   data:
     redis:
       host: localhost
@@ -15,17 +23,20 @@ spring:
   elasticsearch:
     uris: http://localhost:9200
     username: elastic
-    password: Su1S0*d0-t9FW4AkD+NH
+    password: ${ES_PASSWORD:}
   ai:
     openai:
       # 替换为你申请的 API Key（可以去阿里云百炼控制台免费开通通义千问）
-      api-key: sk-ec2befd2ab0743fcb9f873cae3f6d91c
-      # 通义千问的 OpenAI 兼容模式网关地址
-      base-url: https://dashscope.aliyuncs.com/compatible-mode
+      api-key: ${AI_API_KEY:}
+      # 通义千问的 OpenAI 兼容模式网关地址（不含 /v1，Spring AI 会自动拼接）
+      base-url: https://llm-csa7m4x0d9n2i92y.cn-beijing.maas.aliyuncs.com/compatible-mode
       embedding:
+        # 🚨 Spring AI 默认拼接 /v1/embeddings，所以 base-url 不能带 /v1
+        # 最终请求: .../compatible-mode/v1/embeddings
+        api-key: ${AI_API_KEY:}
+        base-url: https://llm-csa7m4x0d9n2i92y.cn-beijing.maas.aliyuncs.com/compatible-mode
         options:
-          # 指定向量生成模型（阿里云百炼支持的 embedding 模型）
-          model: text-embedding-v3
+          model: text-embedding-v4
   # 🚀 消息队列底层配置
   rabbitmq:
     host: localhost
@@ -40,11 +51,11 @@ langchain4j:
   open-ai:
     chat-model:
       # 替换成你之前申请的阿里云 API Key
-      api-key: sk-ec2befd2ab0743fcb9f873cae3f6d91c
+      api-key: ${AI_API_KEY:}
       # 阿里云的 OpenAI 兼容网关地址
-      base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
+      base-url: https://llm-csa7m4x0d9n2i92y.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
       # 指定能聊天的强大模型（qwen-plus 对 Function Calling 的支持极好）
-      model-name: qwen3.5-plus
+      model-name: qwen3.7-plus
       # 开启日志：让你能在 IDEA 控制台偷窥 AI 在底层是怎么思考和调用的！
       log-requests: true
       log-responses: true
@@ -54,6 +65,29 @@ mybatis-plus:
     log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
 
 app:
+  # 🚀 个性化推荐总开关（Phase 4 A/B 测试）
+  # true=个性化 Agent, false=通用 Agent（用于对比效果）
+  personalization:
+    enabled: true
+  # 💳 支付配置
+  payment:
+    channels: balance,alipay,stripe  # 启用的支付渠道
+    alipay:
+      enabled: false
+      app-id: ${ALIPAY_APP_ID:}
+      private-key: ${ALIPAY_PRIVATE_KEY:}
+      alipay-public-key: ${ALIPAY_PUBLIC_KEY:}
+      notify-url: ${ALIPAY_NOTIFY_URL:http://localhost:8080/api/payment/callback/alipay}
+      sandbox: true
+    stripe:
+      enabled: false
+      secret-key: ${STRIPE_SECRET_KEY:}
+      webhook-secret: ${STRIPE_WEBHOOK_SECRET:}
+    wechat:
+      enabled: false
+      app-id: ${WECHAT_APP_ID:}
+      mch-id: ${WECHAT_MCH_ID:}
+      api-key: ${WECHAT_API_KEY:}
   live:
     aliyun:
       access-key-id: ${LIVE_ACCESS_KEY_ID:your-access-key-id}
@@ -68,3 +102,23 @@ app:
       nls-access-secret: ${NLS_ACCESS_SECRET:your-nls-access-secret}
       supported-languages: en,ja,ko,th
       max-concurrent-sessions: 100
+  # 🚚 物流配置
+  shipment:
+    # 自动确认收货：已签收N天后自动确认
+    auto-confirm-days: 7
+    # 物流查询API（占位，后续对接快递100/17TRACK）
+    tracking-api:
+      enabled: false
+      provider: kuaidi100
+      api-key: ${TRACKING_API_KEY:}
+  # 📬 通知配置
+  notification:
+    email:
+      enabled: false  # 设为 true 并填写下方 SMTP 信息以启用邮件通知
+      host: smtp.example.com
+      port: 587
+      username: ${MAIL_USERNAME:}
+      password: ${MAIL_PASSWORD:}
+      from: ${MAIL_FROM:noreply@globalshop.com}
+    websocket:
+      enabled: true   # WebSocket 实时推送开关

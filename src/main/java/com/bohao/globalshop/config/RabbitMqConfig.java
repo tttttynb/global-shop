@@ -53,8 +53,8 @@ public class RabbitMqConfig {
         args.put("x-dead-letter-exchange", ORDER_DEAD_EXCHANGE);
         // 规则2：扔过去的时候，用什么暗号（RoutingKey）？
         args.put("x-dead-letter-routing-key", ORDER_DEAD_ROUTING_KEY);
-        // 规则3：为了方便测试，我们把 TTL（寿命）设为 10 秒（真实电商环境是 15 分钟也就是 900000 毫秒）
-        args.put("x-message-ttl", 10000);
+        // 规则3：订单超时自动取消时间 15 分钟（900000 毫秒），超时后未支付的订单将自动取消
+        args.put("x-message-ttl", 900000);
         return QueueBuilder.durable(ORDER_DELAY_QUEUE).withArguments(args).build();
     }
 

@@ -2,6 +2,7 @@ package com.bohao.globalshop.config;
 
 import com.bohao.globalshop.websocket.AudioStreamHandler;
 import com.bohao.globalshop.websocket.LiveWebSocketHandler;
+import com.bohao.globalshop.websocket.NotificationWebSocketHandler;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.socket.config.annotation.EnableWebSocket;
@@ -14,12 +15,15 @@ import org.springframework.web.socket.config.annotation.WebSocketHandlerRegistry
 public class WebSocketConfig implements WebSocketConfigurer {
     private final LiveWebSocketHandler liveWebSocketHandler;
     private final AudioStreamHandler audioStreamHandler;
+    private final NotificationWebSocketHandler notificationWebSocketHandler;
 
     @Override
     public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
         registry.addHandler(liveWebSocketHandler, "/ws/live/{roomId}")
                 .setAllowedOrigins("*");
         registry.addHandler(audioStreamHandler, "/ws/live/{roomId}/audio")
+                .setAllowedOrigins("*");
+        registry.addHandler(notificationWebSocketHandler, "/ws/notification")
                 .setAllowedOrigins("*");
     }
 }

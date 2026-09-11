@@ -4,19 +4,25 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.bohao.globalshop.common.Result;
 import com.bohao.globalshop.config.RabbitMqConfig;
 import com.bohao.globalshop.dto.OrderCreateDto;
+import com.bohao.globalshop.dto.PaymentCreateDto;
 import com.bohao.globalshop.dto.ReviewSubmitDto;
 import com.bohao.globalshop.entity.*;
+import com.bohao.globalshop.enums.PaymentChannel;
+import com.bohao.globalshop.event.OrderCompletedEvent;
 import com.bohao.globalshop.mapper.*;
 import com.bohao.globalshop.service.OrderService;
+import com.bohao.globalshop.service.PaymentService;
 import com.bohao.globalshop.vo.OrderVo;
+import com.bohao.globalshop.vo.PaymentResultVo;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.math.BigDecimal;
 import java.util.*;
@@ -29,14 +35,15 @@ public class OrderServiceImpl implements OrderService {
     private final ProductMapper productMapper;
     private final UserMapper userMapper;
     private final CartItemMapper cartItemMapper;
-    private final StringRedisTemplate stringRedisTemplate;
     private final ShopMapper shopMapper;
     private final ProductReviewMapper productReviewMapper;
-    private final DefaultRedisScript<Long> seckillScript;
     private final RabbitTemplate rabbitTemplate;
     private final UserAddressMapper userAddressMapper;
     private final CouponMapper couponMapper;
     private final UserCouponMapper userCouponMapper;
+    private final ApplicationEventPublisher eventPublisher;
+    private final PaymentService paymentService;
+    private final com.bohao.globalshop.service.SkuService skuService;
 
     @Override
     @Transactional// 开启数据库事务，保证扣库存和下订单同生共死！！！
@@ -45,18 +52,28 @@ public class OrderServiceImpl implements OrderService {
         if (product == null) {
             return Result.error(400, "商品不存在！");
         }
-        if (product.getStock() < dto.getQuantity()) {
-            return Result.error(400, "抱歉，商品库存不足！");
+        // 🆕 SKU 化：解析目标规格（skuId 为空自动落到默认 SKU，兼容单规格商品）
+        ProductSku sku = skuService.resolveSku(dto.getProductId(), dto.getSkuId());
+        if (sku == null) {
+            return Result.error(400, "该商品规格不存在或已停售！");
         }
-        product.setStock(product.getStock() - dto.getQuantity());
-        int updateResult = productMapper.updateById(product);
-        if (updateResult == 0) {
-            // 如果返回 0，说明在这个短短的几毫秒内，有别人抢先更新了这条数据，版本号对不上了！
-            // 此时直接拦截，后面的生成订单代码根本就不会执行！
+        if (sku.getStock() < dto.getQuantity()) {
+            return Result.error(400, "抱歉，规格 [" + sku.getSpecText() + "] 库存不足！");
+        }
+        // 🚀 第一层护城河：Redis + Lua 原子预扣减（SKU 维度，防高并发超卖）
+        if (!skuService.deductRedisStock(sku.getId(), dto.getQuantity())) {
+            return Result.error(500, "哎呀，活动太火爆了，该规格已被抢空！");
+        }
+        // 🚀 第二层护城河：MySQL 原子扣减 UPDATE ... SET stock = stock - N WHERE stock >= N
+        if (!skuService.deductStock(sku.getId(), dto.getQuantity())) {
+            // DB 扣减失败，把 Redis 预扣的库存还回去
+            skuService.restoreRedisStock(sku.getId(), dto.getQuantity());
             return Result.error(500, "哎呀，活动太火爆了，商品被别人抢先一步啦！请重试。");
         }
-        //计算总价 (单价 × 数量，BigDecimal 的乘法必须用 multiply 方法)
-        BigDecimal totalAmount = product.getPrice().multiply(new BigDecimal(dto.getQuantity()));
+        // 同步商品表冗余展示字段（price=最低SKU价, stock=SKU库存之和）
+        skuService.syncProductAggregate(product.getId());
+        //计算总价 (SKU 单价 × 数量)
+        BigDecimal totalAmount = sku.getPrice().multiply(new BigDecimal(dto.getQuantity()));
 
         // 优惠券抵扣逻辑
         BigDecimal discountAmount = BigDecimal.ZERO;
@@ -105,17 +122,19 @@ public class OrderServiceImpl implements OrderService {
         }
         traderOrderMapper.insert(order);
 
-        // 🚀 架构升级：把订单号作为消息，直接扔进 RabbitMQ 的延迟队列（等待区）！
-        // 消息一发出去，当前线程立刻返回给前端“下单成功”，绝不阻塞！
-        rabbitTemplate.convertAndSend(RabbitMqConfig.ORDER_DELAY_EXCHANGE, RabbitMqConfig.ORDER_DELAY_ROUTING_KEY, order.getId());
+        // 🚀 架构升级：把订单号作为消息，扔进 RabbitMQ 的延迟队列（等待区）！
+        // ⚠️ 必须等事务提交后再发：事务内发送会让死信监听器读到未提交数据（查不到订单空跑）
+        publishOrderTimeoutMessage(order.getId());
 
-        // 2. 创建订单详情
+        // 2. 创建订单详情（🆕 带 SKU 快照：规格文本 + SKU 单价，历史订单可追溯）
         TradeOrderItem orderItem = new TradeOrderItem();
         orderItem.setOrderId(order.getId());
         orderItem.setProductId(product.getId());
+        orderItem.setSkuId(sku.getId());
+        orderItem.setSkuSpec(sku.getSpecText());
         orderItem.setProductName(product.getName());
-        orderItem.setCoverImage(product.getCoverImage());
-        orderItem.setPrice(product.getPrice());
+        orderItem.setCoverImage(sku.getImage() != null && !sku.getImage().isEmpty() ? sku.getImage() : product.getCoverImage());
+        orderItem.setPrice(sku.getPrice());
         orderItem.setQuantity(dto.getQuantity());
         orderItem.setTotalAmount(totalAmount);
         tradeOrderItemMapper.insert(orderItem);
@@ -143,6 +162,12 @@ public class OrderServiceImpl implements OrderService {
             vo.setReceiverPhone(order.getReceiverPhone());
             vo.setReceiverAddress(order.getReceiverAddress());
             vo.setCreateTime(order.getCreateTime());
+            vo.setPaymentType(order.getPaymentType());
+            vo.setPaymentId(order.getPaymentId());
+            vo.setPayTime(order.getPayTime());
+            vo.setCarrierName(order.getCarrierName());
+            vo.setTrackingNumber(order.getTrackingNumber());
+            vo.setShippedAt(order.getShippedAt());
             //核心：根据主订单的ID，去trade_order_item表里查出属于它的所有商品！
             QueryWrapper<TradeOrderItem> itemWrapper = new QueryWrapper<>();
             itemWrapper.eq("order_id", order.getId());
@@ -156,32 +181,15 @@ public class OrderServiceImpl implements OrderService {
     @Override
     @Transactional
     public Result<String> payOrder(Long userId, Long orderId) {
-        // 1.查出这笔订单
-        TradeOrder order = traderOrderMapper.selectById(orderId);
-        if (order == null) {
-            return Result.error(400, "哎呀，没找到这笔订单！");
+        // 委托给支付网关（默认使用余额支付，保持向后兼容）
+        PaymentCreateDto dto = new PaymentCreateDto();
+        dto.setOrderId(orderId);
+        dto.setChannel(PaymentChannel.BALANCE.getCode());
+        Result<PaymentResultVo> result = paymentService.createPayment(userId, dto);
+        if (result.getCode() == 200) {
+            return Result.success("支付成功！扣款：" + result.getData().getAmount() + " 元。老板大气！");
         }
-        // 2.安全校验一：防越权（不能替别人付钱，也不能用别人的钱付自己的订单）
-        if (!order.getUserId().equals(userId)) {
-            return Result.error(403, "警告：非法请求！这并非您的订单！");
-        }
-        // 3.安全校验二：防重复支付（只有状态是 0 待支付的订单才能付钱）
-        if (order.getStatus() != 0) {
-            return Result.error(400, "这笔订单已经支付过啦，请勿重复付款！");
-        }
-        // 4. 查出用户的钱包余额
-        User user = userMapper.selectById(userId);
-        // 5.核心逻辑：判断余额够不够？ (compareTo 返回 -1 代表小于)
-        if (user.getBalance().compareTo(order.getTotalAmount()) < 0) {
-            return Result.error(400, "老板，您的余额不足啦，请先充值！");
-        }
-        // 6.开始扣钱！(当前余额 - 订单总额)
-        user.setBalance(user.getBalance().subtract(order.getTotalAmount()));
-        userMapper.updateById(user); // 更新回数据库
-        // 7.修改订单状态为 1 (已支付)
-        order.setStatus(1);
-        traderOrderMapper.updateById(order);
-        return Result.success("支付成功！扣款：" + order.getTotalAmount() + " 元。老板大气！");
+        return Result.error(result.getCode(), result.getMessage());
     }
 
     @Override
@@ -217,40 +225,40 @@ public class OrderServiceImpl implements OrderService {
                 if (product == null || product.getStatus() != 1) {
                     throw new RuntimeException("商品 [" + item.getProductId() + "] 不存在或已下架！");
                 }
-
-                // ==========================================
-                // 🚀 大厂秒杀核心：Redis + Lua 分布式原子预扣减！
-                // ==========================================
-                // 构造这个商品在 Redis 里的库存 Key (例如: seckill:stock:1)
-                String stockKey = "seckill:stock:" + product.getId();
-
-                // 向 Redis 发射 Lua 脚本！
-                // 参数1: 脚本本身; 参数2: KEYS数组(只传一个Key); 参数3: ARGV数组(购买数量)
-                Long luaResult = stringRedisTemplate.execute(
-                        seckillScript,
-                        Collections.singletonList(stockKey),
-                        String.valueOf(item.getQuantity())
-                );
-
-                // 🚨 如果 Lua 脚本返回 0，说明 Redis 里的库存已经被抢光了，直接无情拒绝！
-                if (luaResult == null || luaResult == 0L) {
-                    throw new RuntimeException("💥 哎呀手慢了！商品 [" + product.getName() + "] 已被抢空！");
+                // 🆕 SKU 化：解析购物车项对应的规格（skuId 为空/已被商家替换 → 落到默认 SKU）
+                ProductSku sku = skuService.resolveSku(item.getProductId(), item.getSkuId());
+                if (sku == null) {
+                    sku = skuService.getOrCreateDefaultSku(item.getProductId());
+                }
+                if (sku == null) {
+                    throw new RuntimeException("商品 [" + product.getName() + "] 规格数据异常，结算失败！");
                 }
 
-                // 👇 只有成功通过了 Redis Lua 脚本的“幸运儿”，才有资格继续往下走！
-                // 在真实的秒杀系统里，走到这里通常会把订单丢进 RabbitMQ 异步写库。
-                // 咱们这里为了保持闭环，既然 Redis 已经扣减成功，我们直接把通过了拦截的合法请求同步写进 MySQL：
-                product.setStock(product.getStock() - item.getQuantity());
-                productMapper.updateById(product);
-                //计算这件商品的小计
-                BigDecimal itemAmount = product.getPrice().multiply(new BigDecimal(item.getQuantity()));
+                // ==========================================
+                // 🚀 大厂秒杀核心：Redis + Lua 分布式原子预扣减（SKU 维度）！
+                // Key: seckill:stock:sku:{skuId}
+                // ==========================================
+                if (!skuService.deductRedisStock(sku.getId(), item.getQuantity())) {
+                    throw new RuntimeException("💥 哎呀手慢了！商品 [" + product.getName() + " " + sku.getSpecText() + "] 已被抢空！");
+                }
+                // MySQL 原子扣减兜底，失败则回补 Redis
+                if (!skuService.deductStock(sku.getId(), item.getQuantity())) {
+                    skuService.restoreRedisStock(sku.getId(), item.getQuantity());
+                    throw new RuntimeException("💥 商品 [" + product.getName() + " " + sku.getSpecText() + "] 库存不足，结算失败！");
+                }
+                // 同步商品表冗余展示字段
+                skuService.syncProductAggregate(product.getId());
+                //计算这件商品的小计（SKU 单价）
+                BigDecimal itemAmount = sku.getPrice().multiply(new BigDecimal(item.getQuantity()));
                 shopTotalAmount = shopTotalAmount.add(itemAmount);
-                //准备订单项
+                //准备订单项（🆕 带 SKU 快照）
                 TradeOrderItem orderItem = new TradeOrderItem();
                 orderItem.setProductId(product.getId());
+                orderItem.setSkuId(sku.getId());
+                orderItem.setSkuSpec(item.getSkuSpec() != null ? item.getSkuSpec() : sku.getSpecText());
                 orderItem.setProductName(product.getName());
-                orderItem.setCoverImage(product.getCoverImage());
-                orderItem.setPrice(product.getPrice());
+                orderItem.setCoverImage(sku.getImage() != null && !sku.getImage().isEmpty() ? sku.getImage() : product.getCoverImage());
+                orderItem.setPrice(sku.getPrice());
                 orderItem.setQuantity(item.getQuantity());
                 orderItem.setTotalAmount(itemAmount);
                 orderItems.add(orderItem);
@@ -274,8 +282,8 @@ public class OrderServiceImpl implements OrderService {
 //            // 假设 15 分钟不付钱就取消（这里用 15 * 60 * 1000 毫秒）
 //            long expireTime = System.currentTimeMillis() + 15 * 60 * 1000;
 //            stringRedisTemplate.opsForZSet().add("order:timeout:queue", String.valueOf(order.getId()), expireTime);
-            // 6. 🚀 大厂架构：把刚生成的拆单主订单号，推入 RabbitMQ 延迟轨道！
-            rabbitTemplate.convertAndSend(RabbitMqConfig.ORDER_DELAY_EXCHANGE, RabbitMqConfig.ORDER_DELAY_ROUTING_KEY, order.getId());
+            // 6. 🚀 大厂架构：把刚生成的拆单主订单号，推入 RabbitMQ 延迟轨道！（事务提交后发送）
+            publishOrderTimeoutMessage(order.getId());
             System.out.println("✅ 拆单成功：为店铺 [" + shopId + "] 生成了订单 [" + order.getId() + "]，金额:" + shopTotalAmount);
         }
 //        return Result.success("🎉 购物车合并结算成功！系统已自动为您拆分为 " + shopCartMap.size() + " 笔独立订单，请前往支付！");
@@ -291,19 +299,51 @@ public class OrderServiceImpl implements OrderService {
             // 1. 改为已取消
             order.setStatus(2);
             traderOrderMapper.updateById(order);
-        }
-        // 2. 查出子订单明细，把库存加回去
-        QueryWrapper<TradeOrderItem> wrapper = new QueryWrapper<>();
-        wrapper.eq("order_id", orderId);
-        List<TradeOrderItem> items = tradeOrderItemMapper.selectList(wrapper);
-        for (TradeOrderItem item : items) {
-            Product product = productMapper.selectById(item.getProductId());
-            if (product != null) {
-                product.setStock(product.getStock() + item.getQuantity());
-                productMapper.updateById(product);
+            // 2. 查出子订单明细，把库存加回去（🆕 SKU 维度回补：DB + Redis 双层）
+            // ⚠️ 幂等关键：只有真正执行了取消（0→2）才回补库存！
+            // 否则重复投递/重复触发时库存会被反复回补，越补越多
+            QueryWrapper<TradeOrderItem> wrapper = new QueryWrapper<>();
+            wrapper.eq("order_id", orderId);
+            List<TradeOrderItem> items = tradeOrderItemMapper.selectList(wrapper);
+            for (TradeOrderItem item : items) {
+                if (item.getSkuId() != null) {
+                    // 新订单：回补 SKU 库存
+                    skuService.restoreStock(item.getSkuId(), item.getQuantity());
+                    skuService.restoreRedisStock(item.getSkuId(), item.getQuantity());
+                    skuService.syncProductAggregate(item.getProductId());
+                } else {
+                    // 存量旧订单（无 SKU 快照）：回补商品表库存，保持兼容
+                    Product product = productMapper.selectById(item.getProductId());
+                    if (product != null) {
+                        product.setStock(product.getStock() + item.getQuantity());
+                        productMapper.updateById(product);
+                    }
+                }
             }
+            return Result.success("订单取消成功！库存已回退！");
         }
-        return Result.success("订单取消成功！库存已回退！");
+        // 订单已支付/已取消：什么都不做，保证幂等
+        return Result.success("订单无需取消！");
+    }
+
+    /**
+     * 发送订单超时取消的延迟消息（⚠️ 事务提交后再发！）
+     * 在事务内发送的话，消息可能先于 COMMIT 到达监听器：
+     * 监听器查不到未提交的订单而空跑，超时取消就此丢失，订单永远挂着。
+     */
+    private void publishOrderTimeoutMessage(Long orderId) {
+        Runnable send = () -> rabbitTemplate.convertAndSend(
+                RabbitMqConfig.ORDER_DELAY_EXCHANGE, RabbitMqConfig.ORDER_DELAY_ROUTING_KEY, orderId);
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    send.run();
+                }
+            });
+        } else {
+            send.run();
+        }
     }
 
 
@@ -336,6 +376,8 @@ public class OrderServiceImpl implements OrderService {
                 System.out.println("财务播报：已成功向商家 [" + merchant.getId() + "] 的钱包转入货款：" + order.getTotalAmount() + "元！");
             }
         }
+        // 🚀 发布订单完成事件，触发用户画像更新
+        eventPublisher.publishEvent(new OrderCompletedEvent(this, userId, orderId, order.getTotalAmount()));
         return Result.success("🎉 确认收货成功！交易完成，快去给商品写个评价吧！");
     }
 
@@ -392,7 +434,14 @@ public class OrderServiceImpl implements OrderService {
         vo.setReceiverPhone(order.getReceiverPhone());
         vo.setReceiverAddress(order.getReceiverAddress());
         vo.setCreateTime(order.getCreateTime());
+        vo.setPaymentType(order.getPaymentType());
+        vo.setPaymentId(order.getPaymentId());
+        vo.setPayTime(order.getPayTime());
+        vo.setCarrierName(order.getCarrierName());
+        vo.setTrackingNumber(order.getTrackingNumber());
+        vo.setShippedAt(order.getShippedAt());
         QueryWrapper<TradeOrderItem> itemWrapper = new QueryWrapper<>();
+        itemWrapper.eq("order_id", order.getId());
         itemWrapper.eq("order_id", order.getId());
         vo.setItems(tradeOrderItemMapper.selectList(itemWrapper));
         return Result.success(vo);

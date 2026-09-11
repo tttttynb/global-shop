@@ -3,6 +3,9 @@ package com.bohao.globalshop.service.impl;
 import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.bohao.globalshop.common.Result;
+import com.bohao.globalshop.dto.AiReviewSummaryDto;
+import com.bohao.globalshop.dto.FrequentlyBoughtDto;
+import com.bohao.globalshop.entity.EsProduct;
 import com.bohao.globalshop.entity.Product;
 import com.bohao.globalshop.entity.ProductFavorite;
 import com.bohao.globalshop.entity.ProductReview;
@@ -16,12 +19,20 @@ import com.bohao.globalshop.mapper.UserMapper;
 import com.bohao.globalshop.service.ProductService;
 import com.bohao.globalshop.vo.ProductReviewVo;
 import com.bohao.globalshop.vo.ProductVo;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.benmanes.caffeine.cache.Cache;
+import dev.langchain4j.data.message.UserMessage;
+import dev.langchain4j.model.chat.ChatModel;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RBloomFilter;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
+import org.springframework.data.elasticsearch.client.elc.NativeQuery;
+import org.springframework.data.elasticsearch.core.ElasticsearchOperations;
+import org.springframework.data.elasticsearch.core.SearchHit;
+import org.springframework.data.elasticsearch.core.SearchHits;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
@@ -50,6 +61,9 @@ public class ProductServiceImpl implements ProductService {
     private final Cache<Long, String> productLocalCache;
     private final RBloomFilter<Long> productBloomFilter;
     private final RedissonClient redissonClient;
+    private final ChatModel chatModel;
+    private final ObjectMapper objectMapper;
+    private final ElasticsearchOperations elasticsearchOperations;
 
 
     @Override
@@ -290,5 +304,213 @@ public class ProductServiceImpl implements ProductService {
             }
         }
         return Result.success(voList);
+    }
+
+    // ==================== AI 评价总结（Tier 1.1） ====================
+
+    private static final int MIN_REVIEWS_FOR_AI = 3;
+    private static final String AI_SUMMARY_KEY_PREFIX = "ai:review:summary:";
+
+    @Override
+    public Result<AiReviewSummaryDto> getAiReviewSummary(Long productId) {
+        // 1. 查缓存
+        String cacheKey = AI_SUMMARY_KEY_PREFIX + productId;
+        String cached = stringRedisTemplate.opsForValue().get(cacheKey);
+        if (cached != null) {
+            try {
+                return Result.success(objectMapper.readValue(cached, AiReviewSummaryDto.class));
+            } catch (Exception e) {
+                log.warn("AI 评价缓存反序列化失败，重新生成: {}", e.getMessage());
+            }
+        }
+
+        // 2. 查评论
+        QueryWrapper<ProductReview> qw = new QueryWrapper<>();
+        qw.eq("product_id", productId);
+        qw.orderByDesc("create_time");
+        List<ProductReview> reviews = productReviewMapper.selectList(qw);
+
+        if (reviews.size() < MIN_REVIEWS_FOR_AI) {
+            return Result.success(null);
+        }
+
+        // 3. 构建 Prompt
+        StringBuilder reviewText = new StringBuilder();
+        for (ProductReview r : reviews) {
+            reviewText.append("- [评分: ").append(r.getRating()).append("/5] ");
+            reviewText.append(r.getContent() != null ? r.getContent() : "（无文字）");
+            reviewText.append("\n");
+        }
+
+        String prompt = """
+                你是一个专业的电商评价分析师。请根据以下商品评价，生成 JSON 格式的总结。
+
+                要求：
+                1. pros: 提炼 3-5 个优点（每条 15 字以内）
+                2. cons: 提炼 2-4 个缺点（每条 15 字以内，如果无明显缺点则写"暂无明显缺点"）
+                3. bestFor: 一句话描述适合什么人群（20 字以内）
+                4. aiRating: 基于评价内容的综合评分（0-5，保留 1 位小数）
+                5. summary: 整体总结（80 字以内）
+
+                只返回 JSON，不要 markdown 代码块标记：
+                {"pros":["...",..."], "cons":["...",..."], "bestFor":"...", "aiRating":4.2, "summary":"..."}
+
+                === 商品评价（共 %d 条） ===
+                %s
+                """.formatted(reviews.size(), reviewText.toString());
+
+        // 4. 调 LLM
+        try {
+            String llmResponse = chatModel.chat(UserMessage.from(prompt)).aiMessage().text();
+            log.debug("AI 评价总结原始响应: {}", llmResponse);
+
+            // 5. 清理可能的 markdown 标记
+            String json = llmResponse.trim();
+            if (json.startsWith("```json")) json = json.substring(7);
+            if (json.startsWith("```")) json = json.substring(3);
+            if (json.endsWith("```")) json = json.substring(0, json.length() - 3);
+            json = json.trim();
+
+            AiReviewSummaryDto dto = objectMapper.readValue(json, AiReviewSummaryDto.class);
+            dto.setReviewCount(reviews.size());
+
+            // 6. 写缓存（24h）
+            stringRedisTemplate.opsForValue().set(cacheKey,
+                    objectMapper.writeValueAsString(dto), 24, TimeUnit.HOURS);
+
+            return Result.success(dto);
+        } catch (Exception e) {
+            log.error("AI 评价总结生成失败: productId={}", productId, e);
+            return Result.error(500, "AI 总结生成失败，请稍后重试");
+        }
+    }
+
+    // ==================== "看了还看" — ES More Like This（Tier 2.1a） ====================
+
+    @Override
+    public Result<List<ProductVo>> getSimilarProducts(Long productId, int size) {
+        try {
+            // 1. 查 MySQL 获取商品名称，作为 MLT 的 like 文本
+            Product product = productMapper.selectById(productId);
+            if (product == null || product.getName() == null) {
+                return Result.success(List.of());
+            }
+
+            // 2. 构建 ES More Like This 查询，排除自身
+            NativeQuery query = NativeQuery.builder()
+                    .withQuery(q -> q.bool(b -> b
+                            .must(m -> m.moreLikeThis(mlt -> mlt
+                                    .fields("name")
+                                    .like(l -> l.text(product.getName()))
+                                    .minTermFreq(1)
+                                    .minDocFreq(1)
+                                    .maxQueryTerms(12)
+                            ))
+                            .mustNot(mn -> mn.ids(i -> i.values(String.valueOf(productId))))
+                    ))
+                    .withMaxResults(size)
+                    .build();
+
+            SearchHits<EsProduct> hits = elasticsearchOperations.search(query, EsProduct.class);
+
+            // 3. 提取结果，批量查店铺名称
+            List<Long> productIds = new ArrayList<>();
+            for (SearchHit<EsProduct> hit : hits) {
+                EsProduct ep = hit.getContent();
+                if (ep.getId() != null) {
+                    productIds.add(ep.getId());
+                }
+            }
+
+            if (productIds.isEmpty()) {
+                return Result.success(List.of());
+            }
+
+            List<Product> products = productMapper.selectBatchIds(productIds);
+            Set<Long> shopIds = products.stream()
+                    .map(Product::getShopId)
+                    .filter(Objects::nonNull)
+                    .collect(Collectors.toSet());
+            Map<Long, Shop> shopMap = shopIds.isEmpty()
+                    ? Map.of()
+                    : shopMapper.selectBatchIds(shopIds).stream()
+                            .collect(Collectors.toMap(Shop::getId, Function.identity()));
+
+            // 保持 ES 返回的排序
+            Map<Long, Product> productMap = products.stream()
+                    .collect(Collectors.toMap(Product::getId, Function.identity()));
+
+            List<ProductVo> voList = new ArrayList<>();
+            for (Long pid : productIds) {
+                Product p = productMap.get(pid);
+                if (p != null) {
+                    ProductVo vo = new ProductVo();
+                    vo.setId(p.getId());
+                    vo.setShopId(p.getShopId());
+                    vo.setName(p.getName());
+                    vo.setDescription(p.getDescription());
+                    vo.setPrice(p.getPrice());
+                    vo.setStock(p.getStock());
+                    vo.setCoverImage(p.getCoverImage());
+                    Shop shop = p.getShopId() != null ? shopMap.get(p.getShopId()) : null;
+                    vo.setShopName(shop != null ? shop.getName() : "平台自营店");
+                    voList.add(vo);
+                }
+            }
+
+            return Result.success(voList);
+        } catch (Exception e) {
+            log.error("ES More Like This 查询失败: productId={}", productId, e);
+            return Result.success(List.of());
+        }
+    }
+
+    // ==================== "买了还买" — 订单共现矩阵（Tier 2.1b） ====================
+
+    @Override
+    public Result<List<FrequentlyBoughtDto>> getFrequentlyBought(Long productId, int size) {
+        try {
+            String zsetKey = "frequently:bought:" + productId;
+            // ZREVRANGE frequently:bought:{productId} 0 {size-1} WITHSCORES
+            Set<org.springframework.data.redis.core.ZSetOperations.TypedTuple<String>> topItems =
+                    stringRedisTemplate.opsForZSet().reverseRangeWithScores(zsetKey, 0, size - 1);
+
+            if (topItems == null || topItems.isEmpty()) {
+                return Result.success(List.of());
+            }
+
+            // 提取 productId 和 score
+            List<Long> relatedIds = new ArrayList<>();
+            Map<Long, Integer> scoreMap = new HashMap<>();
+            for (var item : topItems) {
+                Long rid = Long.valueOf(item.getValue());
+                relatedIds.add(rid);
+                scoreMap.put(rid, item.getScore() != null ? item.getScore().intValue() : 0);
+            }
+
+            // 批量查商品
+            List<Product> products = productMapper.selectBatchIds(relatedIds);
+            Map<Long, Product> productMap = products.stream()
+                    .collect(Collectors.toMap(Product::getId, Function.identity()));
+
+            List<FrequentlyBoughtDto> result = new ArrayList<>();
+            for (Long rid : relatedIds) {
+                Product p = productMap.get(rid);
+                if (p != null) {
+                    FrequentlyBoughtDto dto = new FrequentlyBoughtDto();
+                    dto.setId(p.getId());
+                    dto.setName(p.getName());
+                    dto.setPrice(p.getPrice());
+                    dto.setCoverImage(p.getCoverImage());
+                    dto.setCoOccurrenceCount(scoreMap.getOrDefault(rid, 0));
+                    result.add(dto);
+                }
+            }
+
+            return Result.success(result);
+        } catch (Exception e) {
+            log.error("共现推荐查询失败: productId={}", productId, e);
+            return Result.success(List.of());
+        }
     }
 }
