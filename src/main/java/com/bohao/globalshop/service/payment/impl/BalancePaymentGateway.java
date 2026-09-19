@@ -9,6 +9,7 @@ import com.bohao.globalshop.enums.NotificationType;
 import com.bohao.globalshop.enums.PaymentChannel;
 import com.bohao.globalshop.enums.PaymentStatus;
 import com.bohao.globalshop.event.NotificationEvent;
+import com.bohao.globalshop.event.OrderPaidEvent;
 import com.bohao.globalshop.mapper.PaymentOrderMapper;
 import com.bohao.globalshop.mapper.TraderOrderMapper;
 import com.bohao.globalshop.mapper.UserMapper;
@@ -108,6 +109,9 @@ public class BalancePaymentGateway implements PaymentGateway {
                 "订单 #" + order.getId() + " 已支付成功，金额 ¥" + order.getTotalAmount() + "，等待商家发货。",
                 NotificationTargetType.ORDER.getCode(),
                 order.getId()));
+
+        // 🆕 Phase 4：订单支付成功事件 → F8 返积分/成长值升级 + F7 拼团成员核销成团判定
+        eventPublisher.publishEvent(new OrderPaidEvent(this, userId, order.getId(), order.getTotalAmount()));
 
         // 8. 返回结果
         PaymentResultVo vo = new PaymentResultVo();

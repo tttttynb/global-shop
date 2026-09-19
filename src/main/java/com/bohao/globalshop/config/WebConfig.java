@@ -17,7 +17,8 @@ public class WebConfig implements WebMvcConfigurer {
     public void addInterceptors(InterceptorRegistry registry) {
         registry.addInterceptor(jwtInterceptor)
                 // 安排保安守住所有以 /api/order/ 开头的接口（比如未来的下单接口）
-                .addPathPatterns("/api/order/**", "/api/cart/**", "/api/merchant/**", "/api/chat/**", "/api/live/**", "/api/user/profile/**", "/api/user/address/**", "/api/product/favorite/**", "/api/product/favorites", "/api/coupon/**", "/api/payment/create", "/api/payment/status/**", "/api/shipment/order/**", "/api/shipment/*/refresh", "/api/notification/**")
+                // 🆕 Phase 4：积分中心全保护；拼团仅写操作/我的/团详情/商家侧保护（专区浏览保持公开，便于分享落地）
+                .addPathPatterns("/api/order/**", "/api/cart/**", "/api/merchant/**", "/api/chat/**", "/api/live/**", "/api/user/profile/**", "/api/user/address/**", "/api/product/favorite/**", "/api/product/favorites", "/api/coupon/**", "/api/payment/create", "/api/payment/status/**", "/api/shipment/order/**", "/api/shipment/*/refresh", "/api/notification/**", "/api/points/**", "/api/group-buy/open/**", "/api/group-buy/join/**", "/api/group-buy/my", "/api/group-buy/record/**", "/api/group-buy/merchant/**")
                 // 同时，告诉保安不要去管登录、注册和查看商品列表的接口（以及支付回调、公开物流查询）
                 .excludePathPatterns("/api/user/login", "/api/user/register", "/api/product/list", "/api/product/paged", "/api/product/detail/**", "/api/product/search", "/api/product/reviews/**", "/api/category/**", "/api/payment/callback/**", "/api/payment/channels", "/api/shipment/track/**");
     }
@@ -28,7 +29,7 @@ public class WebConfig implements WebMvcConfigurer {
                 // TODO: 生产环境需要限制为具体的前端域名，如 "https://www.example.com"
                 .allowedOriginPatterns("*") // 开发阶段允许所有前端地址
                 .allowedMethods("GET", "POST", "PUT", "DELETE") // 限制允许的请求方式
-                .allowedHeaders("Authorization", "Content-Type", "X-Requested-With") // 限制允许的请求头
+                .allowedHeaders("Authorization", "Content-Type", "X-Requested-With", "Accept-Language") // 🆕 Phase 3 补：多语言请求头需过 CORS 预检
                 .allowCredentials(true); // 允许携带凭证（如 Cookie/Token）
     }
 

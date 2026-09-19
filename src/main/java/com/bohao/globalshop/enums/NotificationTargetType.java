@@ -11,6 +11,8 @@ public enum NotificationTargetType {
     PRODUCT("PRODUCT", "商品详情"),
     LIVE("LIVE", "直播间"),
     COUPON("COUPON", "优惠券"),
+    /** 🆕 拼团团详情（Phase 4 - F7）：分享落地页 */
+    GROUP_RECORD("GROUP_RECORD", "拼团详情"),
     NONE("NONE", "无跳转");
 
     private final String code;

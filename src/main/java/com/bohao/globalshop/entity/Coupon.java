@@ -23,6 +23,8 @@ public class Coupon {
     private LocalDateTime endTime;
     private Integer totalCount;
     private Integer remainCount;
+    /** 🆕 积分兑换价（Phase 4 - F8）：>0 表示可在积分商城兑换 */
+    private Integer pointsPrice;
     private Integer status; // 0-未开始 1-进行中 2-已结束
     @Version
     private Integer version;

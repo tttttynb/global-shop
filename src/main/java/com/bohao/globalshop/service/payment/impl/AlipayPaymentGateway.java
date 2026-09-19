@@ -183,6 +183,10 @@ public class AlipayPaymentGateway implements PaymentGateway {
                         "订单 #" + order.getId() + " 已通过支付宝支付成功，金额 ¥" + order.getTotalAmount() + "，等待商家发货。",
                         NotificationTargetType.ORDER.getCode(),
                         order.getId()));
+
+                // 🆕 Phase 4：订单支付成功事件 → F8 返积分/成长值升级 + F7 拼团成员核销成团判定
+                eventPublisher.publishEvent(new com.bohao.globalshop.event.OrderPaidEvent(this,
+                        order.getUserId(), order.getId(), order.getTotalAmount()));
             }
 
             return PaymentStatus.SUCCESS;

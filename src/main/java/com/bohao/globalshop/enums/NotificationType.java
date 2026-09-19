@@ -11,6 +11,8 @@ public enum NotificationType {
     COUPON_EXPIRE("COUPON_EXPIRE", "优惠券到期"),
     LIVE_START("LIVE_START", "直播开播"),
     PROMOTION("PROMOTION", "促销活动"),
+    GROUP_BUY("GROUP_BUY", "拼团动态"),
+    POINTS("POINTS", "积分变动"),
     SYSTEM("SYSTEM", "系统通知");
 
     private final String code;

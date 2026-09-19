@@ -9,9 +9,11 @@ import com.bohao.globalshop.dto.ReviewSubmitDto;
 import com.bohao.globalshop.entity.*;
 import com.bohao.globalshop.enums.PaymentChannel;
 import com.bohao.globalshop.event.OrderCompletedEvent;
+import com.bohao.globalshop.event.ReviewCreatedEvent;
 import com.bohao.globalshop.mapper.*;
 import com.bohao.globalshop.service.OrderService;
 import com.bohao.globalshop.service.PaymentService;
+import com.bohao.globalshop.service.PointsService;
 import com.bohao.globalshop.vo.OrderVo;
 import com.bohao.globalshop.vo.PaymentResultVo;
 import lombok.RequiredArgsConstructor;
@@ -44,6 +46,43 @@ public class OrderServiceImpl implements OrderService {
     private final ApplicationEventPublisher eventPublisher;
     private final PaymentService paymentService;
     private final com.bohao.globalshop.service.SkuService skuService;
+    // 🆕 Phase 3：跨境税费计算 + 汇率锁定快照
+    private final com.bohao.globalshop.service.TaxCalcService taxCalcService;
+    private final com.bohao.globalshop.service.ExchangeRateService exchangeRateService;
+    // 🆕 Phase 4：拼团（直接走 Mapper 校验，避免与 GroupBuyService 循环依赖）+ 会员积分
+    private final GroupBuyActivityMapper groupBuyActivityMapper;
+    private final GroupBuyRecordMapper groupBuyRecordMapper;
+    private final GroupBuyMemberMapper groupBuyMemberMapper;
+    private final PointsService pointsService;
+
+    /**
+     * 🆕 多币种锁汇快照（Phase 3 - F5）：下单时点汇率 + 原币金额写入订单，审计对账用。
+     * 成交价仍以 CNY 计（商品表 price 已是发布时点折算价），快照保证"展示-结算"链路可追溯。
+     */
+    private void applyForexSnapshot(TradeOrder order, Product product, int quantity, BigDecimal totalAmountCny) {
+        String currency = product != null && product.getOriginalCurrency() != null
+                ? product.getOriginalCurrency() : "CNY";
+        order.setCurrency(currency);
+        if (!"CNY".equals(currency)) {
+            BigDecimal lockedRate = null;
+            try {
+                lockedRate = exchangeRateService.getRateToCny(currency);
+            } catch (Exception e) {
+                log.warn("锁汇失败 currency={}: {}", currency, e.getMessage());
+            }
+            order.setExchangeRate(lockedRate);
+            if (product.getOriginalPrice() != null) {
+                order.setOriginalAmount(product.getOriginalPrice()
+                        .multiply(BigDecimal.valueOf(quantity))
+                        .setScale(2, java.math.RoundingMode.HALF_UP));
+            } else if (lockedRate != null && lockedRate.compareTo(BigDecimal.ZERO) > 0) {
+                order.setOriginalAmount(totalAmountCny.divide(lockedRate, 2, java.math.RoundingMode.HALF_UP));
+            }
+        } else {
+            order.setExchangeRate(BigDecimal.ONE);
+            order.setOriginalAmount(totalAmountCny);
+        }
+    }
 
     @Override
     @Transactional// 开启数据库事务，保证扣库存和下订单同生共死！！！
@@ -52,6 +91,38 @@ public class OrderServiceImpl implements OrderService {
         if (product == null) {
             return Result.error(400, "商品不存在！");
         }
+
+        // 🆕 拼团下单校验（Phase 4 - F7）：groupRecordId 非空 → 校验团成员/团状态/活动，切到拼团价
+        GroupBuyActivity groupActivity = null;
+        if (dto.getGroupRecordId() != null) {
+            GroupBuyMember groupMember = groupBuyMemberMapper.selectOne(new QueryWrapper<GroupBuyMember>()
+                    .eq("record_id", dto.getGroupRecordId())
+                    .eq("user_id", userId)
+                    .last("LIMIT 1"));
+            if (groupMember == null || groupMember.getStatus() != 0) {
+                return Result.error(400, "参团信息无效，请回到拼团页重新进入！");
+            }
+            GroupBuyRecord groupRecord = groupBuyRecordMapper.selectById(dto.getGroupRecordId());
+            if (groupRecord == null || groupRecord.getStatus() != 0) {
+                return Result.error(400, "该团已成团或已结束！");
+            }
+            if (groupRecord.getExpireTime().isBefore(java.time.LocalDateTime.now())) {
+                return Result.error(400, "该团已过期，开一个新团吧！");
+            }
+            groupActivity = groupBuyActivityMapper.selectById(groupRecord.getActivityId());
+            if (groupActivity == null || groupActivity.getStatus() != 1) {
+                return Result.error(400, "拼团活动已结束！");
+            }
+            if (!groupActivity.getProductId().equals(dto.getProductId())) {
+                return Result.error(400, "拼团商品不匹配！");
+            }
+            // 拼团每人限购 1 件；SKU 以活动配置为准
+            dto.setQuantity(1);
+            if (groupActivity.getSkuId() != null) {
+                dto.setSkuId(groupActivity.getSkuId());
+            }
+        }
+
         // 🆕 SKU 化：解析目标规格（skuId 为空自动落到默认 SKU，兼容单规格商品）
         ProductSku sku = skuService.resolveSku(dto.getProductId(), dto.getSkuId());
         if (sku == null) {
@@ -72,8 +143,9 @@ public class OrderServiceImpl implements OrderService {
         }
         // 同步商品表冗余展示字段（price=最低SKU价, stock=SKU库存之和）
         skuService.syncProductAggregate(product.getId());
-        //计算总价 (SKU 单价 × 数量)
-        BigDecimal totalAmount = sku.getPrice().multiply(new BigDecimal(dto.getQuantity()));
+        //计算总价 (🆕 拼团单按拼团价，普通单按 SKU 单价 × 数量)
+        BigDecimal unitPrice = groupActivity != null ? groupActivity.getGroupPrice() : sku.getPrice();
+        BigDecimal totalAmount = unitPrice.multiply(new BigDecimal(dto.getQuantity()));
 
         // 优惠券抵扣逻辑
         BigDecimal discountAmount = BigDecimal.ZERO;
@@ -99,14 +171,50 @@ public class OrderServiceImpl implements OrderService {
             }
         }
 
+        // 🆕 会员等级折扣（Phase 4 - F8）：按累计消费升级，下单立减
+        BigDecimal levelRate = pointsService.getLevelDiscount(userId);
+        if (levelRate.compareTo(BigDecimal.ZERO) > 0) {
+            BigDecimal levelDiscount = totalAmount.multiply(levelRate)
+                    .setScale(2, java.math.RoundingMode.HALF_UP);
+            discountAmount = discountAmount.add(levelDiscount);
+            totalAmount = totalAmount.subtract(levelDiscount);
+        }
+
+        // 🆕 积分抵扣（Phase 4 - F8）：先按折后商品金额试算，订单落库后再原子扣减
+        PointsService.PointsDeduction pointsPreview = PointsService.PointsDeduction.ZERO;
+        BigDecimal goodsAmountForPoints = totalAmount;
+        if (Boolean.TRUE.equals(dto.getUsePoints())) {
+            pointsPreview = pointsService.previewDeduction(userId, totalAmount);
+            totalAmount = totalAmount.subtract(pointsPreview.deductionAmount());
+        }
+
+        // 🆕 跨境税费（Phase 3 - F6）：到手价 = 商品金额 - 优惠 + 国际运费 + 跨境综合税
+        // 计税价格 = 实际成交价 + 运费（与详情页"预估到手价"试算口径一致）
+        BigDecimal shippingFee = taxCalcService.calcShippingFee(totalAmount);
+        BigDecimal taxFee = taxCalcService.calcTaxAmount(product.getCategoryId(),
+                totalAmount.add(shippingFee), "CN");
+        totalAmount = totalAmount.add(shippingFee).add(taxFee);
+
         // 1. 创建主订单
         TradeOrder order = new TradeOrder();
         order.setUserId(userId);
         order.setShopId(product.getShopId());
         order.setTotalAmount(totalAmount);
         order.setDiscountAmount(discountAmount);
+        order.setShippingFee(shippingFee);
+        order.setTaxFee(taxFee);
         order.setCouponId(dto.getCouponId());
         order.setStatus(0);
+        // 🆕 拼团订单标记（Phase 4 - F7）：来源 + 团实例ID（成团前商家不发货）
+        if (groupActivity != null) {
+            order.setOrderSource("GROUP_BUY");
+            order.setGroupRecordId(dto.getGroupRecordId());
+        }
+        // 🆕 积分抵扣快照（Phase 4 - F8）
+        order.setPointsUsed(pointsPreview.pointsUsed());
+        order.setPointsDeduction(pointsPreview.deductionAmount());
+        // 🆕 多币种锁汇快照（Phase 3 - F5）：记录下单时点汇率与原币金额
+        applyForexSnapshot(order, product, dto.getQuantity(), totalAmount);
         // 地址快照
         if (dto.getAddressId() != null) {
             UserAddress address = userAddressMapper.selectById(dto.getAddressId());
@@ -122,6 +230,20 @@ public class OrderServiceImpl implements OrderService {
         }
         traderOrderMapper.insert(order);
 
+        // 🆕 积分原子扣减（Phase 4 - F8）：订单落库后扣减并回填流水关联；
+        // 并发导致实际扣减与试算不一致时，以实际值校正订单金额
+        if (pointsPreview.pointsUsed() > 0) {
+            PointsService.PointsDeduction actual =
+                    pointsService.deductForOrder(userId, order.getId(), goodsAmountForPoints);
+            if (actual.pointsUsed() != pointsPreview.pointsUsed()) {
+                BigDecimal diff = actual.deductionAmount().subtract(pointsPreview.deductionAmount());
+                order.setPointsUsed(actual.pointsUsed());
+                order.setPointsDeduction(actual.deductionAmount());
+                order.setTotalAmount(order.getTotalAmount().subtract(diff));
+                traderOrderMapper.updateById(order);
+            }
+        }
+
         // 🚀 架构升级：把订单号作为消息，扔进 RabbitMQ 的延迟队列（等待区）！
         // ⚠️ 必须等事务提交后再发：事务内发送会让死信监听器读到未提交数据（查不到订单空跑）
         publishOrderTimeoutMessage(order.getId());
@@ -134,7 +256,7 @@ public class OrderServiceImpl implements OrderService {
         orderItem.setSkuSpec(sku.getSpecText());
         orderItem.setProductName(product.getName());
         orderItem.setCoverImage(sku.getImage() != null && !sku.getImage().isEmpty() ? sku.getImage() : product.getCoverImage());
-        orderItem.setPrice(sku.getPrice());
+        orderItem.setPrice(unitPrice);
         orderItem.setQuantity(dto.getQuantity());
         orderItem.setTotalAmount(totalAmount);
         tradeOrderItemMapper.insert(orderItem);
@@ -168,6 +290,17 @@ public class OrderServiceImpl implements OrderService {
             vo.setCarrierName(order.getCarrierName());
             vo.setTrackingNumber(order.getTrackingNumber());
             vo.setShippedAt(order.getShippedAt());
+            // 🆕 Phase 3：跨境税费明细 + 锁汇快照
+            vo.setShippingFee(order.getShippingFee());
+            vo.setTaxFee(order.getTaxFee());
+            vo.setCurrency(order.getCurrency());
+            vo.setExchangeRate(order.getExchangeRate());
+            vo.setOriginalAmount(order.getOriginalAmount());
+            // 🆕 Phase 4：拼团标记 + 积分抵扣
+            vo.setOrderSource(order.getOrderSource());
+            vo.setGroupRecordId(order.getGroupRecordId());
+            vo.setPointsUsed(order.getPointsUsed());
+            vo.setPointsDeduction(order.getPointsDeduction());
             //核心：根据主订单的ID，去trade_order_item表里查出属于它的所有商品！
             QueryWrapper<TradeOrderItem> itemWrapper = new QueryWrapper<>();
             itemWrapper.eq("order_id", order.getId());
@@ -194,7 +327,9 @@ public class OrderServiceImpl implements OrderService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)//任何一步出错，全部回滚！
-    public Result<String> checkoutCart(Long userId) {
+    public Result<String> checkoutCart(Long userId, Boolean usePoints) {
+        // 🆕 会员等级折扣率（Phase 4 - F8）：结算前取一次，逐单应用
+        BigDecimal levelRate = pointsService.getLevelDiscount(userId);
         // 1. 把这个用户购物车里的所有东西都捞出来
         QueryWrapper<CartItem> queryWrapper = new QueryWrapper<>();
         queryWrapper.eq("user_id", userId);
@@ -218,6 +353,13 @@ public class OrderServiceImpl implements OrderService {
             Long shopId = entry.getKey();
             List<CartItem> shopItems = entry.getValue();
             BigDecimal shopTotalAmount = BigDecimal.ZERO;
+            // 🆕 Phase 3 - F6：逐商品计税累加（不同品类税率档位不同）
+            BigDecimal shopTaxFee = BigDecimal.ZERO;
+            // 🆕 Phase 3 - F5：原币快照收集（购物车混多币种时回退 CNY 记账）
+            String orderCurrency = "CNY";
+            BigDecimal lockedRate = null;
+            BigDecimal orderOriginalAmount = null;
+            boolean mixedCurrency = false;
             List<TradeOrderItem> orderItems = new ArrayList<>();
             // 3.1 遍历这个店铺下的商品：算钱 + 扣库存
             for (CartItem item : shopItems) {
@@ -251,6 +393,23 @@ public class OrderServiceImpl implements OrderService {
                 //计算这件商品的小计（SKU 单价）
                 BigDecimal itemAmount = sku.getPrice().multiply(new BigDecimal(item.getQuantity()));
                 shopTotalAmount = shopTotalAmount.add(itemAmount);
+                // 🆕 Phase 3 - F6：单件商品税费（按品类税率档）
+                shopTaxFee = shopTaxFee.add(taxCalcService.calcTaxAmount(product.getCategoryId(), itemAmount, "CN"));
+                // 🆕 Phase 3 - F5：收集原币快照
+                String itemCurrency = product.getOriginalCurrency() == null ? "CNY" : product.getOriginalCurrency();
+                if (!"CNY".equals(itemCurrency)) {
+                    if ("CNY".equals(orderCurrency)) {
+                        orderCurrency = itemCurrency;
+                        lockedRate = exchangeRateService.getRateToCny(itemCurrency);
+                        orderOriginalAmount = BigDecimal.ZERO;
+                    }
+                    if (itemCurrency.equals(orderCurrency) && product.getOriginalPrice() != null) {
+                        orderOriginalAmount = orderOriginalAmount.add(
+                                product.getOriginalPrice().multiply(BigDecimal.valueOf(item.getQuantity())));
+                    } else {
+                        mixedCurrency = true;
+                    }
+                }
                 //准备订单项（🆕 带 SKU 快照）
                 TradeOrderItem orderItem = new TradeOrderItem();
                 orderItem.setProductId(product.getId());
@@ -265,13 +424,59 @@ public class OrderServiceImpl implements OrderService {
                 // 3.2 顺手把这件商品从购物车表里物理删除！
                 cartItemMapper.deleteById(item.getId());
             }
+            // 🆕 会员等级折扣（Phase 4 - F8）：按商品金额立减
+            BigDecimal levelDiscount = BigDecimal.ZERO;
+            if (levelRate.compareTo(BigDecimal.ZERO) > 0) {
+                levelDiscount = shopTotalAmount.multiply(levelRate)
+                        .setScale(2, java.math.RoundingMode.HALF_UP);
+                shopTotalAmount = shopTotalAmount.subtract(levelDiscount);
+            }
+            // 🆕 积分抵扣试算（Phase 4 - F8）：按折后商品金额，封顶比例由积分服务控制
+            PointsService.PointsDeduction pointsPreview = PointsService.PointsDeduction.ZERO;
+            BigDecimal goodsAmountForPoints = shopTotalAmount;
+            if (Boolean.TRUE.equals(usePoints)) {
+                pointsPreview = pointsService.previewDeduction(userId, shopTotalAmount);
+            }
+            // 🆕 跨境运费与税费（Phase 3 - F6）：运费按订单收一次，其税额按通用档计入
+            BigDecimal shippingFee = taxCalcService.calcShippingFee(shopTotalAmount);
+            BigDecimal taxFee = shopTaxFee.add(taxCalcService.calcTaxAmount(null, shippingFee, "CN"));
+            BigDecimal orderTotal = shopTotalAmount.add(shippingFee).add(taxFee)
+                    .subtract(pointsPreview.deductionAmount());
             //4.为这个店铺生成专属主订单
             TradeOrder order = new TradeOrder();
             order.setUserId(userId);
             order.setShopId(shopId);
-            order.setTotalAmount(shopTotalAmount);
+            order.setTotalAmount(orderTotal);
+            order.setShippingFee(shippingFee);
+            order.setTaxFee(taxFee);
+            // 🆕 Phase 4 - F8：等级折扣 + 积分抵扣快照
+            order.setDiscountAmount(levelDiscount);
+            order.setPointsUsed(pointsPreview.pointsUsed());
+            order.setPointsDeduction(pointsPreview.deductionAmount());
             order.setStatus(0);
+            // 🆕 锁汇快照（Phase 3 - F5）：单一原币跨境订单记录原币与下单时点汇率，混合币种回退 CNY 记账
+            if (!"CNY".equals(orderCurrency) && !mixedCurrency && lockedRate != null && orderOriginalAmount != null) {
+                order.setCurrency(orderCurrency);
+                order.setExchangeRate(lockedRate);
+                order.setOriginalAmount(orderOriginalAmount.setScale(2, java.math.RoundingMode.HALF_UP));
+            } else {
+                order.setCurrency("CNY");
+                order.setExchangeRate(BigDecimal.ONE);
+                order.setOriginalAmount(orderTotal);
+            }
             traderOrderMapper.insert(order);
+            // 🆕 积分原子扣减 + 实际值校正（Phase 4 - F8，与单品下单同构）
+            if (pointsPreview.pointsUsed() > 0) {
+                PointsService.PointsDeduction actual =
+                        pointsService.deductForOrder(userId, order.getId(), goodsAmountForPoints);
+                if (actual.pointsUsed() != pointsPreview.pointsUsed()) {
+                    BigDecimal diff = actual.deductionAmount().subtract(pointsPreview.deductionAmount());
+                    order.setPointsUsed(actual.pointsUsed());
+                    order.setPointsDeduction(actual.deductionAmount());
+                    order.setTotalAmount(order.getTotalAmount().subtract(diff));
+                    traderOrderMapper.updateById(order);
+                }
+            }
             createdOrderIds.add(String.valueOf(order.getId()));
             // 5. 将刚才暂存的【子订单明细】绑上主订单 ID，并存入数据库
             for (TradeOrderItem orderItem : orderItems) {
@@ -284,7 +489,7 @@ public class OrderServiceImpl implements OrderService {
 //            stringRedisTemplate.opsForZSet().add("order:timeout:queue", String.valueOf(order.getId()), expireTime);
             // 6. 🚀 大厂架构：把刚生成的拆单主订单号，推入 RabbitMQ 延迟轨道！（事务提交后发送）
             publishOrderTimeoutMessage(order.getId());
-            System.out.println("✅ 拆单成功：为店铺 [" + shopId + "] 生成了订单 [" + order.getId() + "]，金额:" + shopTotalAmount);
+            System.out.println("✅ 拆单成功：为店铺 [" + shopId + "] 生成了订单 [" + order.getId() + "]，金额:" + orderTotal);
         }
 //        return Result.success("🎉 购物车合并结算成功！系统已自动为您拆分为 " + shopCartMap.size() + " 笔独立订单，请前往支付！");
         return Result.success(String.join(",", createdOrderIds));
@@ -319,6 +524,10 @@ public class OrderServiceImpl implements OrderService {
                         productMapper.updateById(product);
                     }
                 }
+            }
+            // 3. 🆕 返还本单抵扣的积分（Phase 4 - F8，流水幂等）
+            if (order.getPointsUsed() != null && order.getPointsUsed() > 0) {
+                pointsService.refundOrderDeduction(order.getUserId(), orderId);
             }
             return Result.success("订单取消成功！库存已回退！");
         }
@@ -413,6 +622,9 @@ public class OrderServiceImpl implements OrderService {
         mainOrder.setStatus(5);
         traderOrderMapper.updateById(mainOrder);
 
+        // 🆕 Phase 4：新评价事件 → F8 评价晒单返积分（限次防刷） + F9 口碑档案增量重算（防抖合并）
+        eventPublisher.publishEvent(new ReviewCreatedEvent(this, userId, orderItem.getProductId(), review.getId()));
+
         return Result.success("🎉 感谢您的五星好评！评价发布成功！");
     }
 
@@ -440,6 +652,17 @@ public class OrderServiceImpl implements OrderService {
         vo.setCarrierName(order.getCarrierName());
         vo.setTrackingNumber(order.getTrackingNumber());
         vo.setShippedAt(order.getShippedAt());
+        // 🆕 Phase 3：跨境税费明细 + 锁汇快照
+        vo.setShippingFee(order.getShippingFee());
+        vo.setTaxFee(order.getTaxFee());
+        vo.setCurrency(order.getCurrency());
+        vo.setExchangeRate(order.getExchangeRate());
+        vo.setOriginalAmount(order.getOriginalAmount());
+        // 🆕 Phase 4：拼团标记 + 积分抵扣
+        vo.setOrderSource(order.getOrderSource());
+        vo.setGroupRecordId(order.getGroupRecordId());
+        vo.setPointsUsed(order.getPointsUsed());
+        vo.setPointsDeduction(order.getPointsDeduction());
         QueryWrapper<TradeOrderItem> itemWrapper = new QueryWrapper<>();
         itemWrapper.eq("order_id", order.getId());
         itemWrapper.eq("order_id", order.getId());

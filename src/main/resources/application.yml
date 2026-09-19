@@ -69,6 +69,46 @@ app:
   # true=个性化 Agent, false=通用 Agent（用于对比效果）
   personalization:
     enabled: true
+  # 💱 多币种汇率（Phase 3 - F5）
+  forex:
+    enabled: true                 # 关闭后只用库内/兜底汇率，不外呼 API
+    refresh-cron: "0 0 * * * ?"   # 每小时整点刷新
+    cache-minutes: 60             # Redis 缓存 1 小时
+    # 静态兜底汇率（1 外币 = X 人民币）：迁移脚本预置同款，API 全挂时保命
+    fallback-rates: USD=7.10,EUR=7.80,GBP=9.05,JPY=0.048,KRW=0.0052,THB=0.21
+  # 🌍 商品多语言（Phase 3 - F5）
+  i18n:
+    auto-translate: true          # 商品发布/编辑后异步 AI 翻译（控制 LLM 成本的降级开关）
+    target-languages: en,ja,ko,th # 复用直播翻译已验证的语种链路
+  # 🧾 跨境税费（Phase 3 - F6）
+  tax:
+    enabled: true                 # 关闭后运费/税费均为 0（等价旧行为）
+    default-shipping-fee: 29.00   # 国际运费固定档（简化版，无重量维度）
+    free-shipping-threshold: 199.00  # 满额包邮门槛
+    default-rate: 0.0910          # tax_rule 表未初始化时的兜底综合税率
+  # 👥 社交拼团（Phase 4 - F7）
+  group-buy:
+    daily-join-limit: 5           # 风控：每人每天最多开团/参团次数（Redis 计数）
+    expire-scan-ms: 30000         # 过期团扫描间隔（毫秒），超时未成团自动退款
+  # 🎁 会员积分（Phase 4 - F8）
+  points:
+    enabled: true                 # 积分体系总开关（关闭后不发放/不可抵扣）
+    earn-per-yuan: 1              # 每消费 1 元返积分
+    sign-in-points: 5             # 每日签到基础积分
+    sign-in-streak-bonus: 5       # 连续签到每天额外加成（封顶值，连签 N 天加 min(N-1, cap)）
+    review-points: 10             # 评价晒单积分
+    review-daily-limit: 3         # 评价返积分每日上限（Redis 防刷）
+    profile-bonus: 50             # 完善用户画像一次性奖励
+    points-per-yuan: 100          # 抵扣比例：100 积分 = 1 元
+    max-deduction-ratio: 0.5      # 单笔订单积分最多抵扣商品金额的 50%
+    level-growth: 0,1000,5000,20000          # 各等级成长值门槛（青铜/白银/黄金/钻石）
+    level-names: 青铜会员,白银会员,黄金会员,钻石会员
+    level-discounts: 0,0.01,0.02,0.03        # 各等级下单折扣率（0.02 = 98折）
+  # 🗣️ AI 口碑档案 2.0（Phase 4 - F9）
+  reputation:
+    enabled: true                 # 关闭后接口返回空档案，不做 LLM 生成
+    min-reviews: 3                # 评价数达到该值才生成档案（防噪声）
+    flush-interval-ms: 300000     # 防抖合并：新评价标记 pending，每 5 分钟批量重算
   # 💳 支付配置
   payment:
     channels: balance,alipay,stripe  # 启用的支付渠道

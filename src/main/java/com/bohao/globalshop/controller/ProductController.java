@@ -41,6 +41,9 @@ public class ProductController {
     private final RecommendationService recommendationService;
     private final com.bohao.globalshop.service.SkuService skuService;
     private final com.bohao.globalshop.service.PriceHistoryService priceHistoryService;
+    private final com.bohao.globalshop.service.ProductTranslationService productTranslationService;
+    // 🆕 Phase 4 - F9：AI口碑档案 2.0（持久化 + 多语言 + 买家印象标签墙）
+    private final com.bohao.globalshop.service.ReviewIntelligenceService reviewIntelligenceService;
 
 
     @GetMapping("/list")
@@ -85,6 +88,21 @@ public class ProductController {
     }
 
     /**
+     * 🆕 AI口碑档案 2.0（Phase 4 - F9）：持久化档案 + 买家印象标签墙 + 多语言
+     * lang 缺省时按 Accept-Language 头解析；无该语言档案回退中文（exactLang=false）
+     */
+    @GetMapping("/{id}/review-intelligence")
+    public Result<com.bohao.globalshop.vo.ReviewIntelligenceVo> getReviewIntelligence(
+            @PathVariable("id") Long productId,
+            @RequestParam(value = "lang", required = false) String lang,
+            jakarta.servlet.http.HttpServletRequest request) {
+        if (lang == null || lang.isBlank()) {
+            lang = request.getHeader("Accept-Language");
+        }
+        return Result.success(reviewIntelligenceService.getForProduct(productId, lang));
+    }
+
+    /**
      * 🚀 "看了还看" — ES More Like This 相似商品（Tier 2.1a）
      * 基于商品名称文本相似度，用 ES more_like_this 查询返回相似商品
      */
@@ -118,7 +136,9 @@ public class ProductController {
     }
 
     @GetMapping("/detail/{id}")
-    public Result<Product> getProductDetail(@PathVariable("id") Long id) {
+    public Result<Product> getProductDetail(@PathVariable("id") Long id,
+                                            @RequestParam(value = "lang", required = false) String lang,
+                                            HttpServletRequest request) {
         // 直接呼叫 Service 层的神级缓存逻辑
         Product product = productService.getProductDetail(id);
         if (product == null) {
@@ -140,7 +160,58 @@ public class ProductController {
             // 计数器失败不影响主流程
         }
 
+        // 🆕 多语言（Phase 3 - F5）：lang 参数 > Accept-Language 头，命中译文则覆盖标题/描述
+        // product 是缓存反序列化出的新实例，直接改写不污染缓存；无译文自动回退中文原文
+        String resolvedLang = resolveLang(lang, request);
+        if (resolvedLang != null && !resolvedLang.startsWith("zh")) {
+            com.bohao.globalshop.entity.ProductTranslation translation =
+                    productTranslationService.getTranslation(id, resolvedLang);
+            if (translation != null) {
+                if (translation.getTitle() != null && !translation.getTitle().isBlank()) {
+                    product.setName(translation.getTitle());
+                }
+                if (translation.getDescription() != null && !translation.getDescription().isBlank()) {
+                    product.setDescription(translation.getDescription());
+                }
+            }
+        }
+
         return Result.success(product);
+    }
+
+    /**
+     * 解析请求语言：显式 lang 参数优先，其次 Accept-Language 头（"en-US,en;q=0.9" → "en"）
+     */
+    private String resolveLang(String langParam, HttpServletRequest request) {
+        if (langParam != null && !langParam.isBlank()) {
+            return langParam.trim().toLowerCase();
+        }
+        String header = request.getHeader("Accept-Language");
+        if (header == null || header.isBlank()) {
+            return null;
+        }
+        String first = header.split(",")[0].split(";")[0].trim().toLowerCase();
+        return first.isEmpty() ? null : first;
+    }
+
+    /**
+     * 🆕 商品全部译文（Phase 3 - F5），前端可展示"已支持 N 语"标识
+     */
+    @GetMapping("/{id}/translations")
+    public Result<List<com.bohao.globalshop.entity.ProductTranslation>> getTranslations(@PathVariable("id") Long id) {
+        return Result.success(productTranslationService.listTranslations(id));
+    }
+
+    /**
+     * 🆕 手动触发重新翻译（Phase 3 - F5，演示/运维用）：异步执行，稍后刷新详情生效
+     */
+    @PostMapping("/{id}/translate")
+    public Result<String> retranslate(@PathVariable("id") Long id) {
+        if (productMapper.selectById(id) == null) {
+            return Result.error(404, "商品不存在");
+        }
+        productTranslationService.translateProductAsync(id);
+        return Result.success("🌍 翻译任务已提交，四语译文稍后自动更新");
     }
 
     /**

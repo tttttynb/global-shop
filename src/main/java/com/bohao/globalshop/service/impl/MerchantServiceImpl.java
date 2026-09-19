@@ -11,8 +11,11 @@ import com.bohao.globalshop.enums.NotificationTargetType;
 import com.bohao.globalshop.enums.NotificationType;
 import com.bohao.globalshop.enums.ShipmentStatus;
 import com.bohao.globalshop.event.NotificationEvent;
+import com.bohao.globalshop.event.ProductPublishedEvent;
 import com.bohao.globalshop.mapper.*;
+import com.bohao.globalshop.service.ExchangeRateService;
 import com.bohao.globalshop.service.MerchantService;
+import com.bohao.globalshop.service.ProductTranslationService;
 import com.bohao.globalshop.vo.OrderVo;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -22,6 +25,7 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.*;
@@ -44,8 +48,27 @@ public class MerchantServiceImpl implements MerchantService {
     public final ApplicationEventPublisher eventPublisher;
     public final com.bohao.globalshop.service.SkuService skuService;
     public final com.bohao.globalshop.service.PriceHistoryService priceHistoryService;
+    public final ExchangeRateService exchangeRateService;
+    public final ProductTranslationService productTranslationService;
     public final RBloomFilter<Long> productBloomFilter;
     public final Cache<Long, String> productLocalCache;
+
+    /**
+     * 🆕 多币种（Phase 3 - F5）：原币价 → 人民币价折算（发布/编辑时点汇率，成交价以 CNY 计）
+     * 折算结果保留 2 位小数，最低 0.01 防止低值币种小额商品折算为 0。
+     */
+    private BigDecimal convertToCny(BigDecimal originalPrice, String currency) {
+        try {
+            BigDecimal rate = exchangeRateService.getRateToCny(currency);
+            if (rate != null) {
+                BigDecimal cny = originalPrice.multiply(rate).setScale(2, RoundingMode.HALF_UP);
+                return cny.compareTo(new BigDecimal("0.01")) < 0 ? new BigDecimal("0.01") : cny;
+            }
+        } catch (Exception e) {
+            log.warn("原币折算失败 currency={}: {}", currency, e.getMessage());
+        }
+        return null;
+    }
 
     /**
      * 🆕 缓存一致性：商品写操作后必须双删缓存（L1 Caffeine + L2 Redis）！
@@ -95,7 +118,20 @@ public class MerchantServiceImpl implements MerchantService {
         product.setShopId(myShop.getId());
         product.setName(dto.getName());
         product.setDescription(dto.getDescription());
-        product.setPrice(dto.getPrice());
+        // 🆕 多币种（Phase 3 - F5）：原币定价落库；未显式提交 CNY 价时按当前汇率自动折算
+        String currency = dto.getOriginalCurrency() == null || dto.getOriginalCurrency().isBlank()
+                ? "CNY" : dto.getOriginalCurrency().trim().toUpperCase();
+        product.setOriginalCurrency(currency);
+        product.setOriginalPrice(dto.getOriginalPrice());
+        product.setOriginCountry(dto.getOriginCountry());
+        BigDecimal cnyPrice = dto.getPrice();
+        if (cnyPrice == null && dto.getOriginalPrice() != null && !"CNY".equals(currency)) {
+            cnyPrice = convertToCny(dto.getOriginalPrice(), currency);
+            if (cnyPrice == null) {
+                return Result.error(400, "原币汇率暂不可用，折算人民币价失败，请直接填写人民币价格！");
+            }
+        }
+        product.setPrice(cnyPrice);
         product.setStock(dto.getStock());
         product.setCoverImage(dto.getCoverImage());
         product.setStatus(1);
@@ -113,6 +149,8 @@ public class MerchantServiceImpl implements MerchantService {
         }
         //4. 🆕 价格历史：落一条初始价格快照（异步）
         priceHistoryService.recordPrice(product.getId(), product.getPrice());
+        //5. 🆕 多语言（Phase 3 - F5）：事件驱动异步 AI 翻译四语（en/ja/ko/th），不阻塞发布主流程
+        eventPublisher.publishEvent(new ProductPublishedEvent(this, product.getId(), true));
         return Result.success("商品【" + product.getName() + "】上架成功！快去商城看看吧！");
     }
 
@@ -148,6 +186,12 @@ public class MerchantServiceImpl implements MerchantService {
             vo.setCarrierName(order.getCarrierName());
             vo.setTrackingNumber(order.getTrackingNumber());
             vo.setShippedAt(order.getShippedAt());
+            // 🆕 Phase 3：跨境税费明细 + 锁汇快照（商户侧同样可见）
+            vo.setShippingFee(order.getShippingFee());
+            vo.setTaxFee(order.getTaxFee());
+            vo.setCurrency(order.getCurrency());
+            vo.setExchangeRate(order.getExchangeRate());
+            vo.setOriginalAmount(order.getOriginalAmount());
             // 查出这个订单买了啥商品
             QueryWrapper<TradeOrderItem> itemQw = new QueryWrapper<>();
             itemQw.eq("order_id", order.getId());
@@ -258,6 +302,19 @@ public class MerchantServiceImpl implements MerchantService {
         }
         if (dto.getName() != null) product.setName(dto.getName());
         if (dto.getDescription() != null) product.setDescription(dto.getDescription());
+        boolean textChanged = dto.getName() != null || dto.getDescription() != null;
+        // 🆕 多币种（Phase 3 - F5）：允许修改原币定价；未显式提交 CNY 价且存在原币定价时按当前汇率重折算
+        if (dto.getOriginalCurrency() != null && !dto.getOriginalCurrency().isBlank()) {
+            product.setOriginalCurrency(dto.getOriginalCurrency().trim().toUpperCase());
+        }
+        if (dto.getOriginalPrice() != null) product.setOriginalPrice(dto.getOriginalPrice());
+        if (dto.getOriginCountry() != null) product.setOriginCountry(dto.getOriginCountry());
+        BigDecimal newCnyPrice = dto.getPrice();
+        if (newCnyPrice == null && product.getOriginalPrice() != null
+                && product.getOriginalCurrency() != null && !"CNY".equals(product.getOriginalCurrency())) {
+            newCnyPrice = convertToCny(product.getOriginalPrice(), product.getOriginalCurrency());
+            if (newCnyPrice != null) product.setPrice(newCnyPrice);
+        }
         if (dto.getPrice() != null) product.setPrice(dto.getPrice());
         if (dto.getStock() != null) product.setStock(dto.getStock());
         if (dto.getCoverImage() != null) product.setCoverImage(dto.getCoverImage());
@@ -268,16 +325,21 @@ public class MerchantServiceImpl implements MerchantService {
         } else if (skuService.listByProductId(productId).isEmpty()) {
             // 存量商品第一次被编辑时补齐默认 SKU
             skuService.getOrCreateDefaultSku(productId);
-        } else if (dto.getPrice() != null || dto.getStock() != null) {
+        } else if (newCnyPrice != null || dto.getStock() != null) {
             // 🆕 简易编辑对话框没有逐 SKU 输入：把商品级改价/改库存下发到全部 SKU。
             // 否则 SKU（真正的成交价来源）还是旧价，详情页/下单照旧，且下次聚合同步会把商品表改回去！
-            skuService.applyProductLevelChange(productId, dto.getPrice(), dto.getStock());
+            // 原币重折算出的新 CNY 价同样要下发（Phase 3 - F5）
+            skuService.applyProductLevelChange(productId, newCnyPrice, dto.getStock());
         }
         // 🆕 价格历史：价格有变化时异步落一条快照（供走势图展示）
         Product latest = productMapper.selectById(productId);
         priceHistoryService.recordPrice(productId, latest.getPrice());
         // 🆕 缓存一致性：双删两级缓存，保证详情页立刻看到新价格
         evictProductDetailCache(productId);
+        // 🆕 多语言（Phase 3 - F5）：标题/描述变更后事件驱动重翻四语（异步，旧译文在重翻完成前继续可用）
+        if (textChanged) {
+            eventPublisher.publishEvent(new ProductPublishedEvent(this, productId, false));
+        }
         return Result.success("商品信息更新成功！");
     }
 
@@ -310,6 +372,8 @@ public class MerchantServiceImpl implements MerchantService {
         }
         // 🆕 级联删除 SKU
         skuService.removeByProductId(productId);
+        // 🆕 级联删除多语言译文（Phase 3 - F5）
+        productTranslationService.removeByProductId(productId);
         productMapper.deleteById(productId);
         // 删除后清缓存，避免详情页继续从缓存读出“幽灵商品”
         evictProductDetailCache(productId);
