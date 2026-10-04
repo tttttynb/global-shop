@@ -23,6 +23,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -56,8 +57,10 @@ public class ProductController {
             @RequestParam(required = false) Long categoryId,
             @RequestParam(required = false, defaultValue = "latest") String sort,
             @RequestParam(defaultValue = "1") Integer page,
-            @RequestParam(defaultValue = "12") Integer size) {
-        return productService.getProductListPaged(categoryId, sort, page, size);
+            @RequestParam(defaultValue = "12") Integer size,
+            @RequestParam(required = false) BigDecimal minPrice,
+            @RequestParam(required = false) BigDecimal maxPrice) {
+        return productService.getProductListPaged(categoryId, sort, page, size, minPrice, maxPrice);
     }
 
     @PostMapping("/favorite/{id}")

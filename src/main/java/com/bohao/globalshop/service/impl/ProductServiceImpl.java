@@ -36,6 +36,7 @@ import org.springframework.data.elasticsearch.core.SearchHits;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -110,11 +111,19 @@ public class ProductServiceImpl implements ProductService {
     }
 
     @Override
-    public Result<Map<String, Object>> getProductListPaged(Long categoryId, String sort, Integer page, Integer size) {
+    public Result<Map<String, Object>> getProductListPaged(Long categoryId, String sort, Integer page, Integer size,
+                                                           BigDecimal minPrice, BigDecimal maxPrice) {
         QueryWrapper<Product> qw = new QueryWrapper<>();
         qw.eq("status", 1);
         if (categoryId != null) {
             qw.eq("category_id", categoryId);
+        }
+        // 价格区间筛选（淘宝/京东式筛选面板）
+        if (minPrice != null) {
+            qw.ge("price", minPrice);
+        }
+        if (maxPrice != null) {
+            qw.le("price", maxPrice);
         }
         if ("price_asc".equals(sort)) {
             qw.orderByAsc("price");
@@ -150,6 +159,7 @@ public class ProductServiceImpl implements ProductService {
             vo.setPrice(product.getPrice());
             vo.setStock(product.getStock());
             vo.setCoverImage(product.getCoverImage());
+            vo.setSalesCount(product.getSalesCount());
             Shop shop = product.getShopId() != null ? shopMap.get(product.getShopId()) : null;
             vo.setShopName(shop != null ? shop.getName() : "平台自营店");
             voList.add(vo);

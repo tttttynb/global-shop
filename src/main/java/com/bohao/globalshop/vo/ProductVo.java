@@ -15,4 +15,6 @@ public class ProductVo {
     private BigDecimal price;
     private Integer stock;
     private String coverImage;
+    /** 累计销量（1688/淘宝式社会证明展示） */
+    private Integer salesCount;
 }

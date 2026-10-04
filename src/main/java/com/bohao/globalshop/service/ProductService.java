@@ -7,6 +7,7 @@ import com.bohao.globalshop.entity.Product;
 import com.bohao.globalshop.vo.ProductReviewVo;
 import com.bohao.globalshop.vo.ProductVo;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 
@@ -14,7 +15,8 @@ public interface ProductService {
 
     Result<List<ProductVo>> getProductListWithShop();
 
-    Result<Map<String, Object>> getProductListPaged(Long categoryId, String sort, Integer page, Integer size);
+    Result<Map<String, Object>> getProductListPaged(Long categoryId, String sort, Integer page, Integer size,
+                                                    BigDecimal minPrice, BigDecimal maxPrice);
 
     Result<List<ProductReviewVo>> getProductReviews(Long productId);
 
