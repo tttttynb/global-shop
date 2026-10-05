@@ -32,6 +32,12 @@ public class EsProduct {
     @Field(type = FieldType.Keyword, name = "cover_image")
     private String coverImage;
 
+    // 🆕 类目/销量：由 Logstash 从 MySQL 同步而来，供搜索结果页做类目聚合与已售标签
+    @Field(type = FieldType.Long, name = "category_id")
+    private Long categoryId;
+    @Field(type = FieldType.Long, name = "sales_count")
+    private Integer salesCount;
+
     // 🚀 终极杀器：用来存储 AI 大模型生成的 1024 维度的语义向量
     // dims = 1024 (对应 text-embedding-v3 的输出维度)
     // index = true (告诉 ES 对这个浮点数组建立 KNN 向量索引)

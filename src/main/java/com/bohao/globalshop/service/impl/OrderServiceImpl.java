@@ -327,7 +327,7 @@ public class OrderServiceImpl implements OrderService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)//任何一步出错，全部回滚！
-    public Result<String> checkoutCart(Long userId, Boolean usePoints) {
+    public Result<String> checkoutCart(Long userId, Boolean usePoints, Long addressId) {
         // 🆕 会员等级折扣率（Phase 4 - F8）：结算前取一次，逐单应用
         BigDecimal levelRate = pointsService.getLevelDiscount(userId);
         // 1. 把这个用户购物车里的所有东西都捞出来
@@ -336,6 +336,20 @@ public class OrderServiceImpl implements OrderService {
         List<CartItem> cartItems = cartItemMapper.selectList(queryWrapper);
         if (cartItems == null || cartItems.isEmpty()) {
             return Result.error(400, "购物车空空如也，没东西可以结算哦！");
+        }
+        // 🚚 收货地址快照（京东式结算）：优先前端选定地址，其次默认地址；
+        // 拆单后所有店铺订单共享同一收货地址
+        UserAddress shipAddress = null;
+        if (addressId != null) {
+            UserAddress picked = userAddressMapper.selectById(addressId);
+            if (picked != null && picked.getUserId().equals(userId)) {
+                shipAddress = picked;
+            }
+        }
+        if (shipAddress == null) {
+            QueryWrapper<UserAddress> addrQw = new QueryWrapper<>();
+            addrQw.eq("user_id", userId).orderByDesc("is_default").last("LIMIT 1");
+            shipAddress = userAddressMapper.selectOne(addrQw);
         }
         // 2. 核心算法：按店铺拆分购物车商品
         Map<Long, List<CartItem>> shopCartMap = new HashMap<>();
@@ -463,6 +477,16 @@ public class OrderServiceImpl implements OrderService {
                 order.setCurrency("CNY");
                 order.setExchangeRate(BigDecimal.ONE);
                 order.setOriginalAmount(orderTotal);
+            }
+            // 🚚 收货地址快照：所有拆单共享同一收货地址
+            if (shipAddress != null) {
+                order.setReceiverName(shipAddress.getReceiverName());
+                order.setReceiverPhone(shipAddress.getPhone());
+                String fullAddress = (shipAddress.getProvince() != null ? shipAddress.getProvince() : "")
+                        + (shipAddress.getCity() != null ? shipAddress.getCity() : "")
+                        + (shipAddress.getDistrict() != null ? shipAddress.getDistrict() : "")
+                        + shipAddress.getDetailAddress();
+                order.setReceiverAddress(fullAddress);
             }
             traderOrderMapper.insert(order);
             // 🆕 积分原子扣减 + 实际值校正（Phase 4 - F8，与单品下单同构）

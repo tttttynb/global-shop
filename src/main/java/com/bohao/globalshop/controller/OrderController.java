@@ -38,9 +38,10 @@ public class OrderController {
 
     @PostMapping("/checkout")
     public Result<String> checkoutCart(HttpServletRequest request,
-                                       @RequestParam(value = "usePoints", required = false) Boolean usePoints) {
+                                       @RequestParam(value = "usePoints", required = false) Boolean usePoints,
+                                       @RequestParam(value = "addressId", required = false) Long addressId) {
         Long userId = (Long) request.getAttribute("currentUserId");
-        return orderService.checkoutCart(userId, usePoints);
+        return orderService.checkoutCart(userId, usePoints, addressId);
     }
 
     @PostMapping("/pay/{id}")

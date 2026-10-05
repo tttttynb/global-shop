@@ -18,7 +18,7 @@ public interface OrderService {
     Result<String> payOrder(Long userId, Long orderId);
 
     //购物车一件结算（🆕 Phase 4 - F8：usePoints=是否用积分抵扣）
-    Result<String> checkoutCart(Long userId, Boolean usePoints);
+    Result<String> checkoutCart(Long userId, Boolean usePoints, Long addressId);
 
     //取消订单
     Result<String> cancelSingleOrder(Long orderId);
