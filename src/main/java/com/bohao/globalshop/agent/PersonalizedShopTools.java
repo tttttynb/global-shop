@@ -14,6 +14,7 @@ import com.bohao.globalshop.service.OrderService;
 import com.bohao.globalshop.service.PersonalizationService;
 import com.bohao.globalshop.service.ProductService;
 import com.bohao.globalshop.service.UserProfileService;
+import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -82,8 +83,10 @@ public class PersonalizedShopTools {
      * 用户身份从 ThreadLocal 自动获取，搜索结果匹配用户的消费能力。
      * </p>
      */
-    @Tool("当用户描述想买什么东西、寻找礼物、需要商品推荐时，调用此工具在商品库中进行个性化搜索。搜索关键词请从用户原话中提炼。")
-    public String searchProducts(String keyword) {
+    @Tool("查找/推荐任何商品时都必须先调用此工具获取真实商品数据，严禁凭记忆或想象列出商品。"
+        + "适用于用户描述想买什么、找礼物、要推荐等一切涉及具体商品的请求。"
+        + "若用户同时说出了预算或价格上限，请改用 searchByBudget 工具。")
+    public String searchProducts(@P("商品搜索关键词，从用户原话中提炼品类或需求词，例如「降噪耳机」「防晒霜」「露营装备」，不要带价格和语气词") String keyword) {
         Long userId = UserContextHolder.getCurrentUserId();
         log.info("🤖 AI 调用 searchProducts, keyword={}, userId={}", keyword, userId);
 
@@ -105,8 +108,14 @@ public class PersonalizedShopTools {
     /**
      * 🆕 预算内精选（Phase 4 - F10）：语义召回 + 价格区间过滤
      */
-    @Tool("当用户给出了明确预算（如\"500元以内\"、\"预算2000左右\"）时调用此工具，在预算范围内搜索最匹配的商品。minPrice/maxPrice 传数字字符串，未知一侧传空字符串。")
-    public String searchByBudget(String keyword, String minPrice, String maxPrice) {
+    @Tool("只要用户请求里出现了预算、价格、价位、「多少钱以内」「XX 左右」等任何价格信息，就必须调用此工具，"
+        + "在买家预算内搜索真实商品，不得凭记忆回答、不得因用户消费档位高而拒绝或劝其加价。"
+        + "用户只说上限时 minPrice 传空字符串，只说下限时 maxPrice 传空字符串。"
+        + "返回为空时也要如实告知，并主动建议可调近的关键词或预算，再调用本工具复搜一次。")
+    public String searchByBudget(
+            @P("商品品类或需求关键词，例如「降噪耳机」「衬衫」「护肤品」，不要带价格") String keyword,
+            @P("价格下限，人民币数字字符串（如 \"200\"），用户未提及下限则传空字符串") String minPrice,
+            @P("价格上限，人民币数字字符串（如 \"500\"），用户未提及上限则传空字符串") String maxPrice) {
         Long userId = UserContextHolder.getCurrentUserId();
         log.info("🤖 AI 调用 searchByBudget, keyword={}, budget=[{}~{}], userId={}", keyword, minPrice, maxPrice, userId);
         try {

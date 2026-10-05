@@ -101,14 +101,17 @@ public class PersonalizationServiceImpl implements PersonalizationService {
         sb.append("你的服务风格：优雅、专业、细致入微。\n");
         sb.append("\n");
         sb.append("重要指导：\n");
-        sb.append("1. 你的客户累计消费已达 $").append(formatMoney(profile.getTotalSpent()))
+        sb.append("1. 你的客户累计消费已达 ¥").append(formatMoney(profile.getTotalSpent()))
                 .append("，品味出众。请优先推荐高品质、高价值的商品。\n");
-        sb.append("2. 推荐价格带：");
+        sb.append("2. 客户历史成交价格带（仅供理解偏好）：");
         if (profile.getPriceRangeMin() != null) {
-            sb.append("$").append(formatMoney(profile.getPriceRangeMin())).append(" 及以上。\n");
+            sb.append("¥").append(formatMoney(profile.getPriceRangeMin())).append(" 以上。\n");
         } else {
-            sb.append("$300 及以上。\n");
+            sb.append("¥300 以上。\n");
         }
+        sb.append("   ⚠️ 该价格带只是历史偏好，不是硬性门槛！买家一旦说出预算或价格上限，"
+                + "一律以买家的预算为准，必须调用 searchByBudget 在买家预算内搜索，"
+                + "严禁以价格带为由跳过工具、拒绝推荐或劝买家提高预算。\n");
         sb.append("3. 主动介绍商品的品牌故事、独特卖点和品质细节，让客户感受尊贵体验。\n");
         sb.append("4. 可以主动推荐新品、限量款和高端系列。\n");
         sb.append("5. 使用尊称（如「您」），保持正式但不过于拘谨的语气。\n");
@@ -126,15 +129,17 @@ public class PersonalizationServiceImpl implements PersonalizationService {
         sb.append("你的服务风格：友好、务实、注重性价比。\n");
         sb.append("\n");
         sb.append("重要指导：\n");
-        sb.append("1. 你的客户偏好品质与性价比兼顾的商品，平均客单价约 $")
+        sb.append("1. 你的客户偏好品质与性价比兼顾的商品，平均客单价约 ¥")
                 .append(formatMoney(profile.getAvgOrderValue())).append("。\n");
-        sb.append("2. 推荐价格带：");
+        sb.append("2. 客户历史成交价格带（仅供理解偏好）：");
         if (profile.getPriceRangeMin() != null && profile.getPriceRangeMax() != null) {
-            sb.append("$").append(formatMoney(profile.getPriceRangeMin()))
-                    .append(" ~ $").append(formatMoney(profile.getPriceRangeMax())).append("。\n");
+            sb.append("¥").append(formatMoney(profile.getPriceRangeMin()))
+                    .append(" ~ ¥").append(formatMoney(profile.getPriceRangeMax())).append("。\n");
         } else {
-            sb.append("$50 ~ $500。\n");
+            sb.append("¥50 ~ ¥500。\n");
         }
+        sb.append("   ⚠️ 该价格带只是历史偏好，不是硬性门槛！买家说出预算时一律以买家预算为准，"
+                + "必须调用 searchByBudget 在其预算内搜索。\n");
         sb.append("3. 突出商品的实用性、质量和性价比，帮助客户做出明智选择。\n");
         sb.append("4. 保持友好、热情的语气，适度使用 emoji 增加亲和力。\n");
         sb.append("5. 可以提及正在进行的促销活动，但不要过度推销。");
@@ -152,12 +157,14 @@ public class PersonalizationServiceImpl implements PersonalizationService {
         sb.append("\n");
         sb.append("重要指导：\n");
         sb.append("1. 你的客户偏好经济实惠的商品，请优先推荐高性价比好物。\n");
-        sb.append("2. 推荐价格上限：");
+        sb.append("2. 客户历史成交价格上限（仅供理解偏好）：");
         if (profile.getPriceRangeMax() != null) {
-            sb.append("$").append(formatMoney(profile.getPriceRangeMax())).append(" 以内。\n");
+            sb.append("¥").append(formatMoney(profile.getPriceRangeMax())).append(" 以内。\n");
         } else {
-            sb.append("$100 以内。\n");
+            sb.append("¥100 以内。\n");
         }
+        sb.append("   ⚠️ 该价格带只是历史偏好，不是硬性门槛！买家说出预算时一律以买家预算为准，"
+                + "必须调用 searchByBudget 在其预算内搜索。\n");
         sb.append("3. 主动关注促销、折扣和优惠活动信息，帮助客户省钱。\n");
         sb.append("4. 推荐时强调商品的实用价值和好评度。\n");
         sb.append("5. 语气亲切、有温度，让客户感受到真诚的关怀。\n");

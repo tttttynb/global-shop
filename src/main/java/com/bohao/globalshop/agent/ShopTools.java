@@ -4,6 +4,7 @@ import cn.hutool.json.JSONUtil;
 import com.bohao.globalshop.controller.AiSearchController;
 import com.bohao.globalshop.service.OrderService;
 import com.bohao.globalshop.service.ProductService;
+import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
@@ -28,8 +29,8 @@ public class ShopTools {
     }
 
     // 🚀 魔法注解：告诉 AI，如果买家想买东西，就自动去向量库捞！
-    @Tool("当用户描述想买什么东西、寻找礼物、或者需要商品推荐时，调用此工具在商品库中检索")
-    public String searchProducts(String keyword) {
+    @Tool("推荐或查找任何商品前必须先调用此工具获取真实商品数据，严禁凭记忆列举商品或声称没有货；用户提到预算时同样要调用本工具搜索。")
+    public String searchProducts(@P("商品品类或需求关键词，例如「降噪耳机」「香水」，不要带价格与语气词") String keyword) {
         System.out.println("🤖 AI 正在后台偷偷执行高维度语义检索...");
         return JSONUtil.toJsonStr(aiSearchController.semanticSearch(keyword));
     }
