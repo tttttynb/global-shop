@@ -48,6 +48,7 @@
 
 ### 🤖 AI 全链路
 - **AI 购物顾问**（Phase 4 升级）— 金牌导购人设：多轮需求挖掘（预算/场景/偏好）→ `searchByBudget` 预算内精选 → `getBundleRecommendation` 跨品类成套推荐（共现矩阵 + 语义召回，报全家桶总价）→ `batchAddToCart` 一键加购；推荐商品以**可加购卡片**随回复返回前端
+- **提示词工程** — Agent 侧两条铁律：「先查再答」（涉及具体商品必须先调工具拿真实数据）与「金额一律人民币」（历史成交价格带仅作偏好参考，买家预算优先，严禁以档位为由拒答）；`@Tool` 描述 + `@P` 参数说明强化工具调用命中率
 - **AI 语义搜索** — Embedding 向量 + ES kNN 检索 + 用户层级个性化重排
 - **AI 以图搜图** — qwen-vl-max 视觉理解 → 语义召回，拍照找同款
 - **AI 口碑档案 2.0**（Phase 4）— 评价 LLM 沉淀为持久化档案（优缺点 Top3 / 适合人群 / 推荐度 / 买家印象标签墙），新评价防抖合并增量重算，四语言异步补翻
@@ -167,9 +168,9 @@ npm run dev               # http://localhost:5173
 | 模块 | 端点前缀 | 说明 |
 |------|----------|------|
 | 用户 | `/api/user` | 注册、登录、画像、地址 |
-| 商品 | `/api/product` | 浏览、搜索、SKU、价格历史、评价、**口碑档案** |
+| 商品 | `/api/product` | 浏览、搜索、SKU、价格历史、评价、**口碑档案**；分页列表支持**价格区间筛选 + 销量排序** |
 | 购物车 | `/api/cart` | CRUD、**批量加购** |
-| 订单 | `/api/order` | 下单（拼团/积分抵扣）、结算、评价 |
+| 订单 | `/api/order` | 下单（拼团/积分抵扣/**收货地址快照**）、结算、评价 |
 | 支付 | `/api/payment` | 多渠道支付、回调 |
 | **拼团** | `/api/group-buy` | 专区、开团/参团、我的拼团、商家活动管理 |
 | **积分** | `/api/points` | 总览、签到、流水、兑换商城、抵扣试算 |
@@ -196,6 +197,14 @@ npm run dev               # http://localhost:5173
 | `app.points.enabled` | true | 积分体系总开关 |
 | `app.reputation.enabled` | true | AI 口碑档案生成 |
 | `app.payment.channels` | balance,alipay,stripe | 启用的支付渠道 |
+
+## 📝 最近更新（2026-10）
+
+- **购物车结算支持收货地址**：`checkout` 新增 `addressId`，优先指定地址/回落默认地址，拆单后所有订单共享地址快照（修复结算从不写收货人的缺口）
+- **商品分页列表**：新增 `minPrice/maxPrice` 价格区间筛选，返回体透出 `salesCount`（配合前端销量标签与排序）
+- **ES 文档扩展**：`EsProduct` 映射 `category_id` / `sales_count`，支撑搜索结果类目聚合与已售标签
+- **AI Agent 修复**：见上方「提示词工程」——修复美元表述与预算被拒答问题
+- 配套前端改动见 [global-shop-web](https://github.com/tttttynb/global-shop-web#-最近更新2026-10)
 
 ## 📄 License
 
